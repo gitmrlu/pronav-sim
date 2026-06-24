@@ -199,7 +199,7 @@ const PARAMS = [
   {g:"Simulation", k:"timeScale", label:"Run speed",         min:0.01,max:2,   step:0.01,val:1.0, unit:"×", hint:"1× is real-time (very fast). Drop it to fly the drone manually; physics stay exact.", presets:[["0.05×",0.05],["0.1×",0.1],["0.25×",0.25],["1×",1]]},
 ];
 const P = {}; PARAMS.forEach(p=>P[p.k]=p.val);
-P.pnLaw = "true";
+P.pnLaw = "pure";
 P.seekerFilter = "kalman";   // kalman (default) | ab | raw
 P.idealSensors = false;      // when true, guidance uses perfect λ̇ / Vc / target accel
 
@@ -213,7 +213,7 @@ P.idealSensors = false;      // when true, guidance uses perfect λ̇ / Vc / tar
       g.innerHTML=`<div class="title">${p.g}</div><div class="body"></div>`;
       root.appendChild(g); groups[p.g]=g.querySelector(".body");
     }
-    const c=document.createElement("div"); c.className="ctl";
+    const c=document.createElement("div"); c.className="ctl"; c.id="ctl-"+p.k;
     c.innerHTML=`<div class="row"><label>${p.label}</label>
       <span class="val"><span class="num">${fmtNum(p.val,p.step)}</span><span class="unit">${p.unit}</span></span></div>
       <input type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.val}">
@@ -234,12 +234,13 @@ P.idealSensors = false;      // when true, guidance uses perfect λ̇ / Vc / tar
   const law=document.createElement("div"); law.className="ctl";
   law.innerHTML=`<div class="row"><label>Guidance law</label></div>
     <select id="pnLaw">
-      <option value="true">True PN (N·Vc·λ̇)</option>
       <option value="pure">Pure PN (N·Vm·λ̇)</option>
+      <option value="true">True PN (N·Vc·λ̇)</option>
       <option value="aug">Augmented PN (+ target accel)</option>
     </select>`;
   ig.appendChild(law);
-  law.querySelector("select").addEventListener("change",e=>P.pnLaw=e.target.value);
+  law.querySelector("select").value=P.pnLaw;
+  law.querySelector("select").addEventListener("change",e=>{P.pnLaw=e.target.value; updateLawUI();});
   // seeker filter dropdown into Seeker group
   const sg=Array.from(root.querySelectorAll(".group")).find(x=>x.querySelector(".title").textContent==="Seeker").querySelector(".body");
   const flt=document.createElement("div"); flt.className="ctl";
@@ -259,7 +260,13 @@ P.idealSensors = false;      // when true, guidance uses perfect λ̇ / Vc / tar
     <div class="hint">Off = realistic noisy/estimated info. On = perfect truth, for A/B comparison.</div>`;
   sg.appendChild(chk);
   chk.querySelector("input").addEventListener("change",e=>P.idealSensors=e.target.checked);
+  updateLawUI();
 })();
+// Pure PN uses missile speed, not closing velocity, so the Vc-noise control is irrelevant there.
+function updateLawUI(){
+  const vc=document.getElementById("ctl-vcNoise");
+  if(vc) vc.style.display = (P.pnLaw==="pure") ? "none" : "";
+}
 function fmtNum(v,step){ return (step<1)? v.toFixed(step<0.1?2:(Number.isInteger(v)?0:(step<1?1:0))) : Math.round(v); }
 
 /* ---------------- canvases ---------------- */
@@ -294,7 +301,7 @@ function freshSim(){
     seekRaw:[], seekAvail:[],          // seeker sample buffers
     nextSample:0, lamDotMeas:0, lamMeasLast:0,
     // LOS estimator state: kfX = [λ, λ̇, λ̈]; kfP = 3x3 covariance; kfT = last update time
-    kfInit:false, kfX:[0,0,0], kfP:[[1,0,0],[0,1,0],[0,0,1]], kfT:0,
+    kfInit:false, kfX:[0,0,0], kfP:[[1,0,0],[0,1,0],[0,0,1]], kfT:0, kfCount:0, guiding:false,
     lamDotRaw:0, lamRawPrev:0, lamRawT:0, lamRawInit:false,   // raw finite-diff λ̇ (for display)
     aTgtEst:0, VcEst:0,                // estimated target perp-accel and closing velocity
     cpa:R, cpaT:0,                     // true continuous closest-point-of-approach + its time
@@ -419,13 +426,20 @@ function step(s){
         s.lamDotMeas=s.kfX[1];
       }
       s.kfT = smp.t;
+      s.kfCount++;                                               // valid readings processed by the filter
       s.VcEst = P.idealSensors ? Vc : Vc + P.vcNoise*gauss();    // range-rate measurement
     }
   }
   if(s.seekAvail.length>400) s.seekAvail.splice(0,s.seekAvail.length-400);
-  let guidanceLocked = s.seekAvail.length? s.seekAvail[s.seekAvail.length-1].valid : true;
-  s.locked = guidanceLocked;
-  if(!guidanceLocked) s.lostLockEver=true;
+  const fovLock = s.seekAvail.length? s.seekAvail[s.seekAvail.length-1].valid : true;
+  s.locked = fovLock;
+  if(!fovLock) s.lostLockEver=true;
+  // Kalman/α–β filters need several readings before λ̇ is trustworthy -> extra acquisition
+  // delay on top of processing latency. (Ideal sensors bypasses the filter, so no warm-up.)
+  const needReadings = P.idealSensors ? 0 : (P.seekerFilter==="kalman" ? 5 : P.seekerFilter==="ab" ? 3 : 2);
+  const estReady = s.kfCount >= needReadings;
+  const guidanceLocked = fovLock && estReady;                   // guidance only acts once track is settled
+  s.guiding = guidanceLocked;
 
   // estimated quantities fed to guidance (or perfect truth when Ideal sensors is on)
   const lamDotEst = P.idealSensors ? lamDotTrue : s.lamDotMeas;
@@ -496,7 +510,7 @@ function step(s){
     R, Vc, tgo: Vc>1?R/Vc:NaN, lam:lamTrue,
     lamDotMeas:s.lamDotMeas, lamDotTrue, lamDotRaw:s.lamDotRaw, cpa:s.Rmin,
     gCmd:Math.sign(nCmd)*gCmd, gAch:Math.sign(s.nAch)*gAch, gTgt, gCmdAbs:gCmd, gAchAbs:gAch,
-    bearing:bearing*180/Math.PI, fovDeg:P.fovHalf, locked:guidanceLocked?1:0, satur:s.satur?1:0,
+    bearing:bearing*180/Math.PI, fovDeg:P.fovHalf, locked:s.locked?1:0, guiding:guidanceLocked?1:0, satur:s.satur?1:0,
     boost:s.boost?1:0
   });
 
@@ -591,7 +605,7 @@ function render(){
       iV:sim.iV,tV:sim.tV,R:Math.hypot(sim.tx-sim.ix,sim.ty-sim.iy),locked:sim.locked?1:0,
       bearing:ang(Math.atan2(sim.ty-sim.iy,sim.tx-sim.ix)-sim.ihead)*180/Math.PI,fovDeg:P.fovHalf,
       Vc:0,t:sim.t,gCmdAbs:Math.abs(sim.nCmd)/G0,gAchAbs:Math.abs(sim.nAch)/G0,gTgt:Math.abs(sim.nTgt)/G0,
-      lamDotMeas:sim.lamDotMeas, tgo:NaN, boost:sim.boost?1:0, cpa:sim.Rmin};
+      lamDotMeas:sim.lamDotMeas, tgo:NaN, boost:sim.boost?1:0, cpa:sim.Rmin, guiding:sim.guiding?1:0};
     trails={i:sim.trailI,t:sim.trailT}; }
   if(!f) return;
   // smooth camera to keep both in view (only while live)
@@ -685,14 +699,15 @@ function drawSeek(f){
   // target blip: horizontal pos = bearing offset / FOV
   const frac=Math.max(-1.15,Math.min(1.15, f.bearing/f.fovDeg));
   const bx=cx+frac*R, by=cy;
-  const inFov=Math.abs(f.bearing)<=f.fovDeg;
-  x.fillStyle = (f.locked&&inFov)? "#ffd23f":"#ff5a5a";
+  const inFov=Math.abs(f.bearing)<=f.fovDeg, acquiring=f.locked&&inFov&&f.guiding===0;
+  x.fillStyle = !(f.locked&&inFov)? "#ff5a5a" : acquiring? "#ffae42" : "#ffd23f";
   x.beginPath();x.arc(bx,by,7,0,7);x.fill();
   x.strokeStyle=x.fillStyle;x.globalAlpha=.4;x.beginPath();x.arc(bx,by,13,0,7);x.stroke();x.globalAlpha=1;
   // status text
   x.font="11px sans-serif"; x.textAlign="center";
-  if(f.locked&&inFov){x.fillStyle="#3ad17a";x.fillText("● LOCKED",cx,v.h-10);}
-  else {x.fillStyle="#ff5a5a";x.fillText("✕ LOCK LOST",cx,v.h-10);}
+  if(!(f.locked&&inFov)){x.fillStyle="#ff5a5a";x.fillText("✕ LOCK LOST",cx,v.h-10);}
+  else if(acquiring){x.fillStyle="#ffae42";x.fillText("◌ ACQUIRING TRACK",cx,v.h-10);}
+  else {x.fillStyle="#3ad17a";x.fillText("● LOCKED",cx,v.h-10);}
   x.textAlign="left";
 }
 
@@ -867,7 +882,7 @@ function replayTrails(idx){const i=[],t=[];for(let k=0;k<=idx;k+=5){i.push([log[
 /* ---------------- CSV export ---------------- */
 function exportCSV(){
   if(!log.length)return;
-  const cols=["t","ix","iy","tx","ty","ihead","thead","iV","tV","R","cpa","Vc","tgo","lam","lamDotRaw","lamDotMeas","lamDotTrue","gCmd","gAch","gTgt","bearing","fovDeg","locked","satur","boost"];
+  const cols=["t","ix","iy","tx","ty","ihead","thead","iV","tV","R","cpa","Vc","tgo","lam","lamDotRaw","lamDotMeas","lamDotTrue","gCmd","gAch","gTgt","bearing","fovDeg","locked","guiding","satur","boost"];
   const head="# ProNav sim  law="+P.pnLaw+" filter="+P.seekerFilter+" idealSensors="+P.idealSensors+"  "+PARAMS.map(p=>p.k+"="+P[p.k]).join(" ")+"\n";
   let csv=head+cols.join(",")+"\n";
   const lines=new Array(log.length);
