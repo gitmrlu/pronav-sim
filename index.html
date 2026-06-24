@@ -166,6 +166,7 @@ const G0 = 9.81;            // gravity, m/s^2
 const DT  = 0.002;          // fixed internal physics timestep (s) -> 500 Hz
 const MAXREC = 60000;       // hard cap on logged steps
 const CTRL_PX = 240;        // cursor offset (screen px) that commands the drone's full speed
+const VDRAG_REF = 300;      // reference airspeed (m/s) at which the drag sliders are calibrated
 
 /* ---------------- parameter definitions ---------------- */
 const PARAMS = [
@@ -185,18 +186,22 @@ const PARAMS = [
 
   {g:"Seeker", k:"seekerFps",   label:"Seeker frame rate",   min:10,  max:1000,step:5,   val:100, unit:"Hz"},
   {g:"Seeker", k:"seekerLat",   label:"Processing latency",  min:0,   max:50,  step:1,   val:10,  unit:"ms", hint:"Delay from measurement to usable command."},
-  {g:"Seeker", k:"seekerNoise", label:"Angle noise (1σ)",    min:0,   max:10,  step:0.1, val:1.0, unit:"mrad", hint:"Jitters λ̇; high N + noise → instability."},
+  {g:"Seeker", k:"seekerNoise", label:"Angle noise (1σ)",    min:0,   max:10,  step:0.1, val:1.0, unit:"mrad", hint:"Measurement noise the Kalman filter must reject."},
+  {g:"Seeker", k:"kfAgility",   label:"Filter agility",      min:0,   max:100, step:1,   val:45,  unit:"", hint:"Kalman process noise: low = smooth but laggy λ̇, high = responsive but noisier."},
+  {g:"Seeker", k:"vcNoise",     label:"Closing-vel noise",   min:0,   max:80,  step:1,   val:20,  unit:"m/s", hint:"1σ noise on the range-rate (Vc) estimate. Ignored when Ideal sensors is on."},
   {g:"Seeker", k:"fovHalf",     label:"FOV / gimbal limit",  min:5,   max:60,  step:1,   val:30,  unit:"°", hint:"If the target leaves this cone, lock is lost and the missile coasts."},
 
-  {g:"Energy / drag", k:"dragInd",  label:"Induced drag",    min:0,   max:0.1, step:0.005,val:0.02,unit:"·G²", hint:"Speed bleed per G² in turns — drag the missile to waste its energy."},
-  {g:"Energy / drag", k:"dragBase", label:"Base drag",       min:0,   max:10,  step:0.5, val:2,   unit:"m/s²"},
-  {g:"Energy / drag", k:"maxTOF",   label:"Max flight time", min:3,   max:30,  step:1,   val:15,  unit:"s"},
+  {g:"Energy / drag", k:"dragPar", label:"Parasitic drag",   min:0,   max:60,  step:1,   val:12,  unit:"m/s²", hint:"Form/skin drag deceleration AT "+VDRAG_REF+" m/s; scales with V² (∝ dynamic pressure)."},
+  {g:"Energy / drag", k:"dragInd", label:"Induced drag",     min:0,   max:0.2, step:0.005,val:0.02,unit:"·G²", hint:"Drag from pulling G; ∝ load² and ∝ 1/V² (worse when slow). Calibrated at "+VDRAG_REF+" m/s."},
+  {g:"Energy / drag", k:"maxTOF",  label:"Max flight time",  min:3,   max:30,  step:1,   val:15,  unit:"s"},
 
-  {g:"Simulation", k:"hitRadius", label:"Hit radius",        min:1,   max:50,  step:1,   val:5,   unit:"m", hint:"Closest approach below this = intercept."},
-  {g:"Simulation", k:"timeScale", label:"Run speed",         min:0.01,max:2,   step:0.01,val:0.10,unit:"×", hint:"Slows the LIVE sim so you have time to drag. Physics stay exact.", presets:[["0.05×",0.05],["0.1×",0.1],["0.25×",0.25],["1×",1]]},
+  {g:"Simulation", k:"hitRadius", label:"Hit radius",        min:1,   max:50,  step:1,   val:5,   unit:"m", hint:"Closest approach below this = intercept (computed sub-step, no tunneling)."},
+  {g:"Simulation", k:"timeScale", label:"Run speed",         min:0.01,max:2,   step:0.01,val:1.0, unit:"×", hint:"1× is real-time (very fast). Drop it to fly the drone manually; physics stay exact.", presets:[["0.05×",0.05],["0.1×",0.1],["0.25×",0.25],["1×",1]]},
 ];
 const P = {}; PARAMS.forEach(p=>P[p.k]=p.val);
 P.pnLaw = "true";
+P.seekerFilter = "kalman";   // kalman (default) | ab | raw
+P.idealSensors = false;      // when true, guidance uses perfect λ̇ / Vc / target accel
 
 /* ---------------- build control panel ---------------- */
 (function buildPanel(){
@@ -235,6 +240,25 @@ P.pnLaw = "true";
     </select>`;
   ig.appendChild(law);
   law.querySelector("select").addEventListener("change",e=>P.pnLaw=e.target.value);
+  // seeker filter dropdown into Seeker group
+  const sg=Array.from(root.querySelectorAll(".group")).find(x=>x.querySelector(".title").textContent==="Seeker").querySelector(".body");
+  const flt=document.createElement("div"); flt.className="ctl";
+  flt.innerHTML=`<div class="row"><label>LOS-rate filter</label></div>
+    <select id="seekerFilter">
+      <option value="kalman">Kalman (3-state, default)</option>
+      <option value="ab">α–β filter</option>
+      <option value="raw">Raw finite-difference</option>
+    </select>
+    <div class="hint">Estimates λ̇ (and target accel for APN) from the noisy seeker angle.</div>`;
+  sg.appendChild(flt);
+  flt.querySelector("select").addEventListener("change",e=>P.seekerFilter=e.target.value);
+  // Ideal-sensors toggle into Seeker group
+  const chk=document.createElement("div"); chk.className="ctl";
+  chk.innerHTML=`<label style="display:flex;align-items:center;gap:7px;cursor:pointer">
+    <input type="checkbox" id="idealSensors" style="width:auto"> Ideal sensors (perfect λ̇ / Vc / target accel)</label>
+    <div class="hint">Off = realistic noisy/estimated info. On = perfect truth, for A/B comparison.</div>`;
+  sg.appendChild(chk);
+  chk.querySelector("input").addEventListener("change",e=>P.idealSensors=e.target.checked);
 })();
 function fmtNum(v,step){ return (step<1)? v.toFixed(step<0.1?2:(Number.isInteger(v)?0:(step<1?1:0))) : Math.round(v); }
 
@@ -269,6 +293,9 @@ function freshSim(){
     nCmd:0, nAch:0, nTgt:0,           // lateral accels (m/s^2)
     seekRaw:[], seekAvail:[],          // seeker sample buffers
     nextSample:0, lamDotMeas:0, lamMeasLast:0,
+    // LOS estimator state: kfX = [λ, λ̇, λ̈]; kfP = 3x3 covariance; kfT = last update time
+    kfInit:false, kfX:[0,0,0], kfP:[[1,0,0],[0,1,0],[0,0,1]], kfT:0,
+    aTgtEst:0, VcEst:0,                // estimated target perp-accel and closing velocity
     locked:true, inFov:true, satur:false, boost:true,
     Rmin:R, tHit:null, ended:false, outcome:null, missDist:R,
     peakGcmd:0, peakGach:0, peakGtgt:0, peakV:0, lostLockEver:false, saturEver:false,
@@ -281,9 +308,45 @@ function gauss(){ if(gSpare!==null){const s=gSpare;gSpare=null;return s;}
   let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();
   const m=Math.sqrt(-2*Math.log(u));gSpare=m*Math.sin(2*Math.PI*v);return m*Math.cos(2*Math.PI*v);}
 
+// 3-state near-constant-acceleration Kalman filter on the LOS angle.
+// Mutates s.kfX=[λ,λ̇,λ̈] and s.kfP (3x3). z=angle measurement, dt=time since last update,
+// q=process (jerk) noise, R=measurement variance.
+function kfUpdate(s, z, dt, q, R){
+  if(!s.kfInit){ s.kfX=[z,0,0]; s.kfP=[[R,0,0],[0,1,0],[0,0,50]]; s.kfInit=true; s.kfT=z*0; return; }
+  if(dt<=0) dt=1e-4;
+  const x=s.kfX, Pc=s.kfP, d2=dt*dt/2;
+  // predict state: F=[[1,dt,d2],[0,1,dt],[0,0,1]]
+  const x0=ang(x[0]+x[1]*dt+x[2]*d2), x1=x[1]+x[2]*dt, x2=x[2];
+  // predict covariance: M=F·Pc, then A=M·Fᵀ
+  const M=[
+    [Pc[0][0]+dt*Pc[1][0]+d2*Pc[2][0], Pc[0][1]+dt*Pc[1][1]+d2*Pc[2][1], Pc[0][2]+dt*Pc[1][2]+d2*Pc[2][2]],
+    [Pc[1][0]+dt*Pc[2][0],             Pc[1][1]+dt*Pc[2][1],             Pc[1][2]+dt*Pc[2][2]],
+    [Pc[2][0],                         Pc[2][1],                         Pc[2][2]]
+  ];
+  const A=[
+    [M[0][0]+M[0][1]*dt+M[0][2]*d2, M[0][1]+M[0][2]*dt, M[0][2]],
+    [M[1][0]+M[1][1]*dt+M[1][2]*d2, M[1][1]+M[1][2]*dt, M[1][2]],
+    [M[2][0]+M[2][1]*dt+M[2][2]*d2, M[2][1]+M[2][2]*dt, M[2][2]]
+  ];
+  // process noise (continuous white-jerk discretization)
+  const dt2=dt*dt, dt3=dt2*dt, dt4=dt3*dt, dt5=dt4*dt;
+  A[0][0]+=q*dt5/20; A[0][1]+=q*dt4/8; A[0][2]+=q*dt3/6;
+  A[1][0]+=q*dt4/8;  A[1][1]+=q*dt3/3; A[1][2]+=q*dt2/2;
+  A[2][0]+=q*dt3/6;  A[2][1]+=q*dt2/2; A[2][2]+=q*dt;
+  // update with z (H=[1,0,0])
+  const S=A[0][0]+R, K=[A[0][0]/S, A[1][0]/S, A[2][0]/S], y=ang(z-x0);
+  s.kfX=[ang(x0+K[0]*y), x1+K[1]*y, x2+K[2]*y];
+  s.kfP=[
+    [(1-K[0])*A[0][0], (1-K[0])*A[0][1], (1-K[0])*A[0][2]],
+    [A[1][0]-K[1]*A[0][0], A[1][1]-K[1]*A[0][1], A[1][2]-K[1]*A[0][2]],
+    [A[2][0]-K[2]*A[0][0], A[2][1]-K[2]*A[0][1], A[2][2]-K[2]*A[0][2]]
+  ];
+}
+
 /* ---------------- one physics step ---------------- */
 function step(s){
   const dt=DT;
+  const ix0=s.ix, iy0=s.iy, tx0=s.tx, ty0=s.ty;   // snapshot for sub-step closest approach
   // ----- TARGET: holonomic FPV drone — thrust in ANY direction up to max-G, with airframe lag -----
   const steering = cursorWorld && mouseInTop && (state==="running"||state==="paused");
   let dvx, dvy;                              // desired velocity
@@ -320,34 +383,65 @@ function step(s){
   const fov = P.fovHalf*Math.PI/180;
   s.inFov = Math.abs(bearing) <= fov;
 
+  const lamDotTrue = R>1e-6 ? ((dx*(tvy-ivy)-dy*(tvx-ivx))/(R*R)) : 0;   // exact LOS rate
+  const aTgtTrue = -s.taccx*Math.sin(lamTrue) + s.taccy*Math.cos(lamTrue); // true target accel ⊥ LOS
+
   // ----- SEEKER: sample at frame rate, with noise + FOV validity -----
   while(s.t >= s.nextSample){
     const noise = (P.seekerNoise/1000)*gauss();
     s.seekRaw.push({t:s.nextSample, lam: lamTrue+noise, valid: s.inFov});
     s.nextSample += 1/P.seekerFps;
   }
-  // promote samples older than processing latency to "available"
+  // promote samples older than processing latency to "available", running the chosen estimator
   const availT = s.t - P.seekerLat/1000;
-  while(s.seekRaw.length && s.seekRaw[0].t <= availT){ s.seekAvail.push(s.seekRaw.shift()); }
-  if(s.seekAvail.length>400) s.seekAvail.splice(0,s.seekAvail.length-400);
-  // estimate LOS rate from last two valid available samples
-  const valid=s.seekAvail.filter(x=>x.valid);
-  let guidanceLocked = s.seekAvail.length? s.seekAvail[s.seekAvail.length-1].valid : true;
-  if(valid.length>=2){
-    const a=valid[valid.length-2], b=valid[valid.length-1];
-    if(b.t>a.t) s.lamDotMeas = ang(b.lam-a.lam)/(b.t-a.t);
+  const qKF = Math.pow(10, P.kfAgility/25 - 4);                  // jerk process-noise (≈0.006 at default)
+  const Rmeas = Math.max((P.seekerNoise/1000)*(P.seekerNoise/1000), 1e-12);
+  while(s.seekRaw.length && s.seekRaw[0].t <= availT){
+    const smp = s.seekRaw.shift(); s.seekAvail.push(smp);
+    if(smp.valid){
+      const dtk = s.kfInit ? Math.max(smp.t - s.kfT, 1e-4) : 0;
+      if(P.seekerFilter==="raw"){                                // two-point finite difference
+        if(s.kfInit){ s.lamDotMeas = ang(smp.lam - s.kfX[0])/dtk; }
+        s.kfX[0]=smp.lam; s.kfX[2]=0; s.kfInit=true;
+      } else if(P.seekerFilter==="ab"){                          // α–β filter
+        if(!s.kfInit){ s.kfX=[smp.lam,0,0]; s.kfInit=true; }
+        else { const al=0.5+0.004*P.kfAgility, be=0.05+0.004*P.kfAgility;
+          const xp=ang(s.kfX[0]+s.kfX[1]*dtk), r=ang(smp.lam-xp);
+          s.kfX[0]=ang(xp+al*r); s.kfX[1]=s.kfX[1]+(be/dtk)*r; s.kfX[2]=0; }
+        s.lamDotMeas=s.kfX[1];
+      } else {                                                   // Kalman (default)
+        kfUpdate(s, smp.lam, dtk, qKF, Rmeas);
+        s.lamDotMeas=s.kfX[1];
+      }
+      s.kfT = smp.t;
+      s.VcEst = P.idealSensors ? Vc : Vc + P.vcNoise*gauss();    // range-rate measurement
+    }
   }
+  if(s.seekAvail.length>400) s.seekAvail.splice(0,s.seekAvail.length-400);
+  let guidanceLocked = s.seekAvail.length? s.seekAvail[s.seekAvail.length-1].valid : true;
   s.locked = guidanceLocked;
   if(!guidanceLocked) s.lostLockEver=true;
 
-  // ----- GUIDANCE LAW -> commanded lateral accel -----
+  // estimated quantities fed to guidance (or perfect truth when Ideal sensors is on)
+  const lamDotEst = P.idealSensors ? lamDotTrue : s.lamDotMeas;
+  const VcEst     = P.idealSensors ? Vc : s.VcEst;
+  // target perp-accel estimate for APN: from KF λ̈ via LOS-rate kinematics
+  //   a_T⊥ = R·λ̈ + 2·Ṙ·λ̇ + a_M⊥  (Ṙ = -Vc, a_M⊥ ≈ own lateral accel projected ⊥ LOS)
+  if(P.idealSensors) s.aTgtEst = aTgtTrue;
+  else if(P.seekerFilter==="kalman"){
+    const amax2=2*P.targetMaxG*G0;
+    s.aTgtEst = Math.max(-amax2, Math.min(amax2,
+      R*s.kfX[2] + 2*(-VcEst)*lamDotEst + s.nAch*Math.cos(bearing)));
+  } else s.aTgtEst = 0;   // simpler filters can't estimate target accel -> APN degrades to True PN
+
+  // ----- GUIDANCE LAW -> commanded lateral accel (correct acceleration direction) -----
+  // True/Aug PN command is ⊥ LOS; project onto ⊥-velocity (the turn axis) via cos(bearing).
+  // Pure PN command is already ⊥ velocity.
   let nCmd;
   if(!guidanceLocked){ nCmd = 0; }                 // lost lock -> coast straight
-  else if(P.pnLaw==="pure") nCmd = P.N*s.iV*s.lamDotMeas;
-  else if(P.pnLaw==="aug"){
-    const nTperp = -s.taccx*Math.sin(lamTrue) + s.taccy*Math.cos(lamTrue); // target accel perp to LOS
-    nCmd = P.N*Vc*s.lamDotMeas + 0.5*P.N*nTperp;
-  } else nCmd = P.N*Vc*s.lamDotMeas;               // True PN
+  else if(P.pnLaw==="pure") nCmd = P.N*s.iV*lamDotEst;
+  else if(P.pnLaw==="aug")  nCmd = (P.N*VcEst*lamDotEst + 0.5*P.N*s.aTgtEst)*Math.cos(bearing);
+  else                      nCmd = (P.N*VcEst*lamDotEst)*Math.cos(bearing);   // True PN
   // saturation at interceptor structural limit
   const nMax=P.intMaxG*G0;
   s.satur = Math.abs(nCmd)>nMax;
@@ -356,15 +450,19 @@ function step(s){
   // airframe / autopilot first-order lag
   const alpha=Math.min(1, dt/Math.max(P.tau,1e-4));
   s.nAch += (nCmd - s.nAch)*alpha;
-  // aerodynamic turn authority scales with airspeed^2 (little control near zero speed)
+  // aerodynamic turn authority scales with airspeed^2 (little control near zero speed).
+  // This is an authority limit, NOT structural saturation, so it doesn't set the saturation flag.
   const VREF=100;                                       // airspeed for full-G authority
   const aeroMax = nMax*Math.min(1,(s.iV/VREF)*(s.iV/VREF));
-  if(Math.abs(s.nAch)>aeroMax){ s.nAch=Math.sign(s.nAch)*aeroMax; s.saturEver=true; }
+  if(Math.abs(s.nAch)>aeroMax){ s.nAch=Math.sign(s.nAch)*aeroMax; if(s.iV>VREF) s.saturEver=true; }
   // ----- apply to interceptor: axial thrust, drag, turn -----
   s.boost = s.t < P.burnTime;
   if(s.boost) s.iV += P.axialAccel*G0*dt;               // rocket motor burn
   const gLat=Math.abs(s.nAch)/G0;
-  s.iV -= (P.dragInd*gLat*gLat*G0 + P.dragBase)*dt;     // induced + base drag
+  const vr=s.iV/VDRAG_REF, vinv=VDRAG_REF/Math.max(s.iV,40);
+  const aPar=P.dragPar*vr*vr;                           // parasitic drag ∝ V²
+  const aInd=P.dragInd*gLat*gLat*G0*vinv*vinv;          // induced drag ∝ load² / V²
+  s.iV -= (aPar+aInd)*dt;
   if(s.iV<0) s.iV=0;
   const omega = s.nAch/Math.max(s.iV,1e-3);
   s.ihead += omega*dt;
@@ -372,13 +470,20 @@ function step(s){
   s.iy += s.iV*Math.sin(s.ihead)*dt;
   s.peakV=Math.max(s.peakV,s.iV);
 
+  // ----- sub-step closest approach (analytic minimum over the step; no tunneling) -----
+  const drx=tx0-ix0, dry=ty0-iy0;                        // relative position at step start
+  const ddx=(s.tx-s.ix)-drx, ddy=(s.ty-s.iy)-dry;        // change in relative position (= Δv·dt)
+  const vv=ddx*ddx+ddy*ddy;
+  let tstar = vv>1e-12 ? -((drx*ddx+dry*ddy)/vv) : 0;
+  tstar=Math.max(0,Math.min(1,tstar));
+  const dmin=Math.hypot(drx+ddx*tstar, dry+ddy*tstar);   // true closest approach this step
+  if(dmin<s.Rmin) s.Rmin=dmin;
+
   // ----- peaks / record -----
   const gCmd=Math.abs(nCmd)/G0, gAch=Math.abs(s.nAch)/G0, gTgt=Math.abs(s.nTgt)/G0;
   s.peakGcmd=Math.max(s.peakGcmd,gCmd); s.peakGach=Math.max(s.peakGach,gAch); s.peakGtgt=Math.max(s.peakGtgt,gTgt);
-  if(R<s.Rmin) s.Rmin=R;
   s.t += dt;
 
-  const lamDotTrue = R>1e-6 ? ( (dx*(tvy-ivy)-dy*(tvx-ivx)) / (R*R) ) : 0;
   if(log.length<MAXREC) log.push({
     t:s.t, ix:s.ix, iy:s.iy, tx:s.tx, ty:s.ty,
     ihead:s.ihead, thead:s.thead, iV:s.iV, tV:s.tV,
@@ -393,7 +498,7 @@ function step(s){
     if(s.trailI.length>4000){s.trailI.shift();s.trailT.shift();} }
 
   // ----- termination -----
-  if(R < P.hitRadius){ end(s,"hit",R); }
+  if(dmin < P.hitRadius){ end(s,"hit",dmin); }           // sub-step closest approach
   else if(Vc<0 && s.t>0.1){ end(s,"miss",s.Rmin); }      // passed closest approach
   else if(s.t>=P.maxTOF){ end(s,"timeout",s.Rmin); }
 }
@@ -540,7 +645,18 @@ function drawTop(f,trails){
   // labels
   x.fillStyle="#39d3ff"; x.font="10px sans-serif"; x.fillText("interceptor", is.x+10,is.y-8);
   x.fillStyle="#ffd23f"; x.fillText("target", ts.x+10,ts.y-10);
+  // HUD indicator: run speed + sim clock (top-right)
+  const slow=P.timeScale<0.999, paused=(state==="paused");
+  const spd=(P.timeScale>=1?P.timeScale.toFixed(1):P.timeScale.toFixed(2))+"×";
+  const hud=`${paused?"⏸":"▸"} ${spd}    t ${(f.t||0).toFixed(2)}s`;
+  x.font="12px ui-monospace,Menlo,monospace"; const hw=x.measureText(hud).width;
+  x.fillStyle="rgba(0,0,0,.5)"; roundRect(x, v.w-hw-22, 8, hw+14, 22, 5); x.fill();
+  x.fillStyle = paused? "#ffd23f" : slow? "#ffae42" : "#3ad17a";
+  x.textBaseline="middle"; x.fillText(hud, v.w-hw-15, 20); x.textBaseline="alphabetic";
 }
+function roundRect(x,X,Y,w,h,r){ x.beginPath();
+  x.moveTo(X+r,Y); x.arcTo(X+w,Y,X+w,Y+h,r); x.arcTo(X+w,Y+h,X,Y+h,r);
+  x.arcTo(X,Y+h,X,Y,r); x.arcTo(X,Y,X+w,Y,r); x.closePath(); }
 function drawTrail(x,arr,W2S,col){ if(!arr||arr.length<2)return; x.strokeStyle=col;x.lineWidth=1.5;x.beginPath();
   for(let i=0;i<arr.length;i++){const p=W2S(arr[i][0],arr[i][1]); i?x.lineTo(p.x,p.y):x.moveTo(p.x,p.y);} x.stroke(); }
 function drawVec(x,s,head,V,scale,col){ const L=Math.min(70,Math.max(22,V*scale*0.25));
@@ -741,7 +857,7 @@ function replayTrails(idx){const i=[],t=[];for(let k=0;k<=idx;k+=5){i.push([log[
 function exportCSV(){
   if(!log.length)return;
   const cols=["t","ix","iy","tx","ty","ihead","thead","iV","tV","R","Vc","tgo","lam","lamDotMeas","lamDotTrue","gCmd","gAch","gTgt","bearing","fovDeg","locked","satur","boost"];
-  const head="# ProNav sim  law="+P.pnLaw+"  "+PARAMS.map(p=>p.k+"="+P[p.k]).join(" ")+"\n";
+  const head="# ProNav sim  law="+P.pnLaw+" filter="+P.seekerFilter+" idealSensors="+P.idealSensors+"  "+PARAMS.map(p=>p.k+"="+P[p.k]).join(" ")+"\n";
   let csv=head+cols.join(",")+"\n";
   const lines=new Array(log.length);
   for(let i=0;i<log.length;i++){const d=log[i];lines[i]=cols.map(c=>{const v=d[c];return (typeof v==="number")?(Number.isInteger(v)?v:v.toFixed(5)):v;}).join(",");}
