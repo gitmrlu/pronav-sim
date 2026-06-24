@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proportional Navigation Interception Simulator</title>
+<style>
+  :root{
+    --bg:#0c0f14; --panel:#141a22; --panel2:#1b2330; --line:#27303d;
+    --txt:#d7dee8; --dim:#8a95a5; --accent:#39b5ff; --good:#3ad17a; --bad:#ff5a5a;
+    --cmd:#ff6b6b; --ach:#39d3ff; --tgt:#ffd23f; --los:#b58bff; --range:#3ad17a; --vc:#ff8ad1;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px}
+  #app{display:flex;height:100vh;overflow:hidden}
+  /* ---- control panel ---- */
+  #panel{width:310px;flex:0 0 310px;background:var(--panel);border-right:1px solid var(--line);
+    overflow-y:auto;padding:10px 12px 40px}
+  #panel h1{font-size:14px;margin:2px 0 4px;color:#fff;letter-spacing:.3px}
+  #panel .sub{color:var(--dim);font-size:11px;margin-bottom:10px;line-height:1.45}
+  .group{margin:10px 0;border:1px solid var(--line);border-radius:8px;background:var(--panel2)}
+  .group>.title{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent);
+    padding:7px 10px;border-bottom:1px solid var(--line);font-weight:600}
+  .group>.body{padding:6px 10px 9px}
+  .ctl{margin:8px 0}
+  .ctl .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px}
+  .ctl label{color:var(--txt);font-size:12px}
+  .ctl .val{color:var(--accent);font-variant-numeric:tabular-nums;font-size:12px}
+  .ctl .unit{color:var(--dim);font-size:10px;margin-left:2px}
+  input[type=range]{width:100%;accent-color:var(--accent);height:16px}
+  .ctl .hint{color:var(--dim);font-size:10px;margin-top:2px;line-height:1.3}
+  select{width:100%;background:#0e131a;color:var(--txt);border:1px solid var(--line);
+    border-radius:6px;padding:5px}
+  .btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  button{background:#222c3a;color:var(--txt);border:1px solid var(--line);border-radius:6px;
+    padding:7px 10px;cursor:pointer;font-size:12px;flex:1}
+  button:hover{background:#2c3a4d}
+  button.primary{background:var(--accent);color:#04223a;border-color:var(--accent);font-weight:700}
+  button.primary:hover{background:#5cc6ff}
+  button:disabled{opacity:.4;cursor:default}
+  .presets{display:flex;gap:4px;margin-top:5px}
+  .presets button{padding:4px 0;font-size:11px}
+  /* ---- main (center column) ---- */
+  #main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+  #views{display:flex;gap:8px;padding:8px;flex:1 1 auto;min-height:0}
+  .viewbox{position:relative;background:#06090d;border:1px solid var(--line);border-radius:8px;overflow:hidden;height:100%}
+  #topWrap{flex:1;min-width:0}
+  #seekWrap{flex:0 0 260px;width:260px}
+  .viewbox canvas{display:block;width:100%;height:100%;user-select:none;-webkit-user-select:none}
+  #top{cursor:crosshair}
+  .vlabel{position:absolute;top:6px;left:8px;font-size:11px;color:var(--dim);
+    background:rgba(0,0,0,.4);padding:2px 6px;border-radius:4px;pointer-events:none}
+  #status{position:absolute;left:0;right:0;bottom:0;text-align:center;font-size:13px;
+    padding:7px;background:linear-gradient(transparent,rgba(0,0,0,.75));pointer-events:none}
+  #status.go{color:var(--good)} #status.miss{color:var(--bad)} #status.hit{color:var(--good)}
+  /* readouts */
+  #readouts{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:1px;
+    background:var(--line);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .ro{background:var(--panel);padding:5px 8px;position:relative}
+  .ro.hasbar{padding-right:16px}
+  .ro .k{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.4px}
+  .ro .v{font-size:15px;font-variant-numeric:tabular-nums;margin-top:1px}
+  .ro .bar{position:absolute;top:6px;bottom:6px;right:5px;width:5px;background:#0e131a;
+    border-radius:3px;overflow:hidden}
+  .ro .bar .fill{position:absolute;left:0;right:0;bottom:0;height:0;background:var(--accent)}
+  .ro .pct{position:absolute;bottom:4px;right:13px;font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums}
+  /* charts — fixed-width right column, full height */
+  #charts{flex:0 0 360px;width:360px;display:flex;flex-direction:column;
+    overflow-y:auto;padding:8px;background:var(--panel);border-left:1px solid var(--line)}
+  #charts .ctitle{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--accent);
+    font-weight:600;margin:0 2px 6px}
+  .chart{position:relative;background:#06090d;border:1px solid var(--line);border-radius:7px;
+    margin-bottom:8px;flex:1 1 0;min-height:130px}
+  .chart canvas{display:block;width:100%;height:100%}
+  .chart .clabel{position:absolute;top:4px;left:8px;font-size:10px;color:var(--dim)}
+  .chart .legend{position:absolute;top:4px;right:8px;font-size:10px;display:flex;gap:9px}
+  .chart .legend span{display:flex;align-items:center;gap:3px}
+  .chart .legend i{width:9px;height:3px;border-radius:2px;display:inline-block}
+  /* results */
+  #results{padding:8px 12px;border-top:1px solid var(--line);background:var(--panel2);display:none;
+    flex:0 0 auto;max-height:42%;overflow-y:auto}
+  #results.show{display:block}
+  #results h3{margin:0 0 6px;font-size:13px}
+  #statgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+  .stat .k{color:var(--dim);font-size:10px;text-transform:uppercase}
+  .stat .v{font-size:15px;font-variant-numeric:tabular-nums;margin-top:2px}
+  #replayBar{display:flex;align-items:center;gap:10px;margin-top:8px}
+  #replayBar input{flex:1;accent-color:var(--accent)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:10px;background:#0e131a;border:1px solid var(--line);color:var(--dim)}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ============ CONTROL PANEL ============ -->
+  <div id="panel">
+    <h1>ProNav Interception Simulator</h1>
+    <div class="sub">Set parameters, click <b>Arm</b>, then <b>click anywhere on the engagement view to launch</b>. After that, just <b>move the mouse over that view</b> to fly the target — no need to hold the button. Its turn is capped by max-G. The interceptor guides on True&nbsp;PN through a realistic seeker → autopilot chain.</div>
+
+    <div class="btns">
+      <button id="armBtn" class="primary">Arm / Reset</button>
+      <button id="pauseBtn" disabled>Pause</button>
+      <button id="stepBtn" disabled>Step</button>
+    </div>
+
+    <div id="paramRoot"></div>
+
+    <div class="group">
+      <div class="title">Data</div>
+      <div class="body">
+        <div class="btns">
+          <button id="csvBtn" disabled>Export CSV</button>
+        </div>
+        <div class="hint" style="color:var(--dim);font-size:10px;margin-top:6px">
+          Every internal physics step is logged (positions, velocities, LOS, λ̇, commanded vs achieved G, offset, …).
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ MAIN ============ -->
+  <div id="main">
+    <div id="views">
+      <div class="viewbox" id="topWrap">
+        <canvas id="top"></canvas>
+        <div class="vlabel">Top-down engagement (m)</div>
+        <div id="status" class="go">Loading…</div>
+      </div>
+      <div class="viewbox" id="seekWrap">
+        <canvas id="seek"></canvas>
+        <div class="vlabel">Interceptor seeker FOV</div>
+      </div>
+    </div>
+
+    <div id="readouts"></div>
+
+    <div id="results">
+      <h3 id="resTitle">Result</h3>
+      <div id="statgrid"></div>
+      <div id="replayBar">
+        <span class="pill">Replay</span>
+        <input type="range" id="replay" min="0" max="0" value="0" disabled>
+        <span class="pill" id="replayT">t = 0.000 s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ CHARTS (right column) ============ -->
+  <div id="charts">
+    <div class="ctitle">Time-series telemetry</div>
+    <div class="chart"><canvas data-c="g"></canvas><div class="clabel">Acceleration — G</div>
+      <div class="legend"><span><i style="background:var(--cmd)"></i>cmd</span><span><i style="background:var(--ach)"></i>achieved</span><span><i style="background:var(--tgt)"></i>target</span></div></div>
+    <div class="chart"><canvas data-c="lam"></canvas><div class="clabel">LOS rate — °/s</div>
+      <div class="legend"><span><i style="background:var(--los)"></i>seeker</span><span><i style="background:#5b6b80"></i>true</span></div></div>
+    <div class="chart"><canvas data-c="rng"></canvas><div class="clabel">Range &amp; closing velocity</div>
+      <div class="legend"><span><i style="background:var(--range)"></i>range m</span><span><i style="background:var(--vc)"></i>Vc m/s</span></div></div>
+    <div class="chart"><canvas data-c="off"></canvas><div class="clabel">Seeker bearing offset — °</div>
+      <div class="legend"><span><i style="background:#ffae42"></i>measured</span><span><i style="background:#5b6b80"></i>FOV limit</span></div></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const G0 = 9.81;            // gravity, m/s^2
+const DT  = 0.002;          // fixed internal physics timestep (s) -> 500 Hz
+const MAXREC = 60000;       // hard cap on logged steps
+const CTRL_PX = 240;        // cursor offset (screen px) that commands the drone's full speed
+
+/* ---------------- parameter definitions ---------------- */
+const PARAMS = [
+  {g:"Target (FPV drone)", k:"targetSpeed",    label:"Initial speed", min:0, max:120, step:1, val:30, unit:"m/s", hint:"Speed at engagement start."},
+  {g:"Target (FPV drone)", k:"targetMaxSpeed", label:"Max speed",     min:5, max:200, step:1, val:50, unit:"m/s", hint:"Top speed — the drone won't exceed this in any direction."},
+  {g:"Target (FPV drone)", k:"targetMaxG",     label:"Max accel",     min:1, max:30,  step:0.5,val:10, unit:"G",   hint:"Max thrust in ANY direction — turn, speed up, brake, even reverse/stop (it's a multirotor, not a rocket)."},
+  {g:"Target (FPV drone)", k:"targetTau",      label:"Airframe lag τ",min:0.005,max:0.3,step:0.005,val:0.03,unit:"s",hint:"First-order lag in the drone's response to your stick inputs."},
+
+  {g:"Engagement", k:"initRange",  label:"Initial range",  min:50, max:15000, step:50, val:1000, unit:"m", hint:"Start separation (closing). Can go down to 50 m."},
+  {g:"Engagement", k:"initOffset", label:"Initial offset", min:-60,max:60,    step:1,  val:0,    unit:"°", hint:"Target's angular offset from the interceptor's boresight at start (0 = dead ahead)."},
+
+  {g:"Interceptor", k:"axialAccel", label:"Axial accel (boost)", min:1,   max:80,  step:1,   val:25,  unit:"G", hint:"Forward thrust acceleration during the burn — launches from rest (0 m/s)."},
+  {g:"Interceptor", k:"burnTime",   label:"Burn time",           min:0.1, max:10,  step:0.1, val:1,   unit:"s", hint:"Thrust duration; coasts on drag only afterwards."},
+  {g:"Interceptor", k:"N",          label:"Nav constant  N",     min:2,   max:6,   step:0.1, val:4,   unit:"",  hint:"a_cmd = N · Vc · λ̇"},
+  {g:"Interceptor", k:"intMaxG",    label:"Max lateral G",       min:5,   max:60,  step:1,   val:15,  unit:"G", hint:"Structural turn limit. Low airspeed further limits achievable G (aero authority ∝ V²)."},
+  {g:"Interceptor", k:"tau",        label:"Airframe lag τ",      min:0.01,max:0.6, step:0.01,val:0.10,unit:"s", hint:"First-order autopilot/airframe response lag."},
+
+  {g:"Seeker", k:"seekerFps",   label:"Seeker frame rate",   min:10,  max:1000,step:5,   val:100, unit:"Hz"},
+  {g:"Seeker", k:"seekerLat",   label:"Processing latency",  min:0,   max:50,  step:1,   val:10,  unit:"ms", hint:"Delay from measurement to usable command."},
+  {g:"Seeker", k:"seekerNoise", label:"Angle noise (1σ)",    min:0,   max:10,  step:0.1, val:1.0, unit:"mrad", hint:"Jitters λ̇; high N + noise → instability."},
+  {g:"Seeker", k:"fovHalf",     label:"FOV / gimbal limit",  min:5,   max:60,  step:1,   val:30,  unit:"°", hint:"If the target leaves this cone, lock is lost and the missile coasts."},
+
+  {g:"Energy / drag", k:"dragInd",  label:"Induced drag",    min:0,   max:0.1, step:0.005,val:0.02,unit:"·G²", hint:"Speed bleed per G² in turns — drag the missile to waste its energy."},
+  {g:"Energy / drag", k:"dragBase", label:"Base drag",       min:0,   max:10,  step:0.5, val:2,   unit:"m/s²"},
+  {g:"Energy / drag", k:"maxTOF",   label:"Max flight time", min:3,   max:30,  step:1,   val:15,  unit:"s"},
+
+  {g:"Simulation", k:"hitRadius", label:"Hit radius",        min:1,   max:50,  step:1,   val:5,   unit:"m", hint:"Closest approach below this = intercept."},
+  {g:"Simulation", k:"timeScale", label:"Run speed",         min:0.01,max:2,   step:0.01,val:0.10,unit:"×", hint:"Slows the LIVE sim so you have time to drag. Physics stay exact.", presets:[["0.05×",0.05],["0.1×",0.1],["0.25×",0.25],["1×",1]]},
+];
+const P = {}; PARAMS.forEach(p=>P[p.k]=p.val);
+P.pnLaw = "true";
+
+/* ---------------- build control panel ---------------- */
+(function buildPanel(){
+  const root=document.getElementById("paramRoot");
+  const groups={};
+  PARAMS.forEach(p=>{
+    if(!groups[p.g]){
+      const g=document.createElement("div"); g.className="group";
+      g.innerHTML=`<div class="title">${p.g}</div><div class="body"></div>`;
+      root.appendChild(g); groups[p.g]=g.querySelector(".body");
+    }
+    const c=document.createElement("div"); c.className="ctl";
+    c.innerHTML=`<div class="row"><label>${p.label}</label>
+      <span class="val"><span class="num">${fmtNum(p.val,p.step)}</span><span class="unit">${p.unit}</span></span></div>
+      <input type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.val}">
+      ${p.hint?`<div class="hint">${p.hint}</div>`:""}`;
+    const input=c.querySelector("input"), num=c.querySelector(".num");
+    input.addEventListener("input",()=>{P[p.k]=parseFloat(input.value);num.textContent=fmtNum(P[p.k],p.step);
+      if(state==="armed") arm(); /* live-update geometry */});
+    if(p.presets){
+      const pr=document.createElement("div"); pr.className="presets";
+      p.presets.forEach(([lbl,v])=>{const b=document.createElement("button");b.textContent=lbl;
+        b.onclick=()=>{input.value=v;input.dispatchEvent(new Event("input"));};pr.appendChild(b);});
+      c.appendChild(pr);
+    }
+    groups[p.g].appendChild(c);
+  });
+  // PN law dropdown into Interceptor group
+  const ig=Array.from(root.querySelectorAll(".group")).find(x=>x.querySelector(".title").textContent==="Interceptor").querySelector(".body");
+  const law=document.createElement("div"); law.className="ctl";
+  law.innerHTML=`<div class="row"><label>Guidance law</label></div>
+    <select id="pnLaw">
+      <option value="true">True PN (N·Vc·λ̇)</option>
+      <option value="pure">Pure PN (N·Vm·λ̇)</option>
+      <option value="aug">Augmented PN (+ target accel)</option>
+    </select>`;
+  ig.appendChild(law);
+  law.querySelector("select").addEventListener("change",e=>P.pnLaw=e.target.value);
+})();
+function fmtNum(v,step){ return (step<1)? v.toFixed(step<0.1?2:(Number.isInteger(v)?0:(step<1?1:0))) : Math.round(v); }
+
+/* ---------------- canvases ---------------- */
+const topC=document.getElementById("top"), topX=topC.getContext("2d");
+const seekC=document.getElementById("seek"), seekX=seekC.getContext("2d");
+const chartCv={}; document.querySelectorAll("#charts canvas").forEach(c=>chartCv[c.dataset.c]={cv:c,cx:c.getContext("2d")});
+function fitCanvas(c){const r=c.getBoundingClientRect();const dpr=window.devicePixelRatio||1;
+  c.width=Math.max(1,r.width*dpr);c.height=Math.max(1,r.height*dpr);const x=c.getContext("2d");x.setTransform(dpr,0,0,dpr,0,0);return {w:r.width,h:r.height};}
+let dims={};
+function fitAll(){ dims.top=fitCanvas(topC); dims.seek=fitCanvas(seekC);
+  for(const k in chartCv) dims["c_"+k]=fitCanvas(chartCv[k].cv); render(); }
+window.addEventListener("resize",fitAll);
+
+/* ---------------- simulation state ---------------- */
+let state="idle";            // idle | armed | running | paused | ended
+let sim=null;                // active sim object
+let log=[];                  // recorded frames
+let acc=0, lastTime=0;       // animation accumulator
+let cursorWorld=null, dragging=false;
+let cam={cx:0,cy:0,scale:1,tScale:1};
+
+function freshSim(){
+  const R=P.initRange, off=P.initOffset*Math.PI/180;
+  return {
+    t:0,
+    // interceptor at origin, heading +x (toward target)
+    ix:0, iy:0, ihead:0, iV:0,         // interceptor launches from rest
+    // target placed at the initial offset angle, heading back toward the interceptor
+    tx:R*Math.cos(off), ty:R*Math.sin(off), thead:off+Math.PI, tV:P.targetSpeed,
+    tvx:P.targetSpeed*Math.cos(off+Math.PI), tvy:P.targetSpeed*Math.sin(off+Math.PI), taccx:0, taccy:0,
+    nCmd:0, nAch:0, nTgt:0,           // lateral accels (m/s^2)
+    seekRaw:[], seekAvail:[],          // seeker sample buffers
+    nextSample:0, lamDotMeas:0, lamMeasLast:0,
+    locked:true, inFov:true, satur:false, boost:true,
+    Rmin:R, tHit:null, ended:false, outcome:null, missDist:R,
+    peakGcmd:0, peakGach:0, peakGtgt:0, peakV:0, lostLockEver:false, saturEver:false,
+    trailI:[], trailT:[]
+  };
+}
+const ang=a=>{while(a>Math.PI)a-=2*Math.PI;while(a<-Math.PI)a+=2*Math.PI;return a;};
+let gSpare=null;
+function gauss(){ if(gSpare!==null){const s=gSpare;gSpare=null;return s;}
+  let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();
+  const m=Math.sqrt(-2*Math.log(u));gSpare=m*Math.sin(2*Math.PI*v);return m*Math.cos(2*Math.PI*v);}
+
+/* ---------------- one physics step ---------------- */
+function step(s){
+  const dt=DT;
+  // ----- TARGET: holonomic FPV drone — thrust in ANY direction up to max-G, with airframe lag -----
+  const steering = cursorWorld && mouseInTop && (state==="running"||state==="paused");
+  let dvx, dvy;                              // desired velocity
+  if(steering){                              // "arrive" at the cursor: eases off and stops on it
+    const ex=cursorWorld.x-s.tx, ey=cursorWorld.y-s.ty, dist=Math.hypot(ex,ey);
+    // control scale follows the zoom: full speed is commanded ~CTRL_PX from the drone on-screen,
+    // so cursor offsets inside that radius give fine, proportional sub-max-G control.
+    const arriveR=CTRL_PX/Math.max(cam.scale,1e-6);
+    const dspeed=Math.min(P.targetMaxSpeed, dist/arriveR*P.targetMaxSpeed);
+    if(dist>1e-3){ dvx=ex/dist*dspeed; dvy=ey/dist*dspeed; } else { dvx=0; dvy=0; }
+  } else { dvx=s.tvx; dvy=s.tvy; }           // hands off -> coast at current velocity
+  // acceleration command toward desired velocity, capped at max-G in ANY direction (turn/brake/reverse)
+  let acx=(dvx-s.tvx)*3.5, acy=(dvy-s.tvy)*3.5;
+  const amax=P.targetMaxG*G0, amag=Math.hypot(acx,acy);
+  if(amag>amax){ acx=acx/amag*amax; acy=acy/amag*amax; }
+  // airframe lag on the drone (first-order)
+  const ta=Math.min(1, dt/Math.max(P.targetTau,1e-4));
+  s.taccx+=(acx-s.taccx)*ta; s.taccy+=(acy-s.taccy)*ta;
+  // integrate velocity (capped at max speed) and position
+  s.tvx+=s.taccx*dt; s.tvy+=s.taccy*dt;
+  const tsp=Math.hypot(s.tvx,s.tvy);
+  if(tsp>P.targetMaxSpeed){ s.tvx=s.tvx/tsp*P.targetMaxSpeed; s.tvy=s.tvy/tsp*P.targetMaxSpeed; }
+  s.tx+=s.tvx*dt; s.ty+=s.tvy*dt;
+  s.tV=Math.hypot(s.tvx,s.tvy); s.thead=Math.atan2(s.tvy,s.tvx);
+  s.nTgt=Math.hypot(s.taccx,s.taccy);        // total G load on the drone (any direction)
+
+  // ----- geometry -----
+  const dx=s.tx-s.ix, dy=s.ty-s.iy, R=Math.hypot(dx,dy);
+  const lamTrue=Math.atan2(dy,dx);
+  const ivx=s.iV*Math.cos(s.ihead), ivy=s.iV*Math.sin(s.ihead);
+  const tvx=s.tvx, tvy=s.tvy;
+  const Vc = R>1e-6 ? -((dx*(tvx-ivx)+dy*(tvy-ivy))/R) : 0;   // closing velocity (+ = closing)
+  const bearing = ang(lamTrue - s.ihead);                     // off-boresight angle
+  const fov = P.fovHalf*Math.PI/180;
+  s.inFov = Math.abs(bearing) <= fov;
+
+  // ----- SEEKER: sample at frame rate, with noise + FOV validity -----
+  while(s.t >= s.nextSample){
+    const noise = (P.seekerNoise/1000)*gauss();
+    s.seekRaw.push({t:s.nextSample, lam: lamTrue+noise, valid: s.inFov});
+    s.nextSample += 1/P.seekerFps;
+  }
+  // promote samples older than processing latency to "available"
+  const availT = s.t - P.seekerLat/1000;
+  while(s.seekRaw.length && s.seekRaw[0].t <= availT){ s.seekAvail.push(s.seekRaw.shift()); }
+  if(s.seekAvail.length>400) s.seekAvail.splice(0,s.seekAvail.length-400);
+  // estimate LOS rate from last two valid available samples
+  const valid=s.seekAvail.filter(x=>x.valid);
+  let guidanceLocked = s.seekAvail.length? s.seekAvail[s.seekAvail.length-1].valid : true;
+  if(valid.length>=2){
+    const a=valid[valid.length-2], b=valid[valid.length-1];
+    if(b.t>a.t) s.lamDotMeas = ang(b.lam-a.lam)/(b.t-a.t);
+  }
+  s.locked = guidanceLocked;
+  if(!guidanceLocked) s.lostLockEver=true;
+
+  // ----- GUIDANCE LAW -> commanded lateral accel -----
+  let nCmd;
+  if(!guidanceLocked){ nCmd = 0; }                 // lost lock -> coast straight
+  else if(P.pnLaw==="pure") nCmd = P.N*s.iV*s.lamDotMeas;
+  else if(P.pnLaw==="aug"){
+    const nTperp = -s.taccx*Math.sin(lamTrue) + s.taccy*Math.cos(lamTrue); // target accel perp to LOS
+    nCmd = P.N*Vc*s.lamDotMeas + 0.5*P.N*nTperp;
+  } else nCmd = P.N*Vc*s.lamDotMeas;               // True PN
+  // saturation at interceptor structural limit
+  const nMax=P.intMaxG*G0;
+  s.satur = Math.abs(nCmd)>nMax;
+  if(s.satur){ nCmd = Math.sign(nCmd)*nMax; s.saturEver=true; }
+  s.nCmd=nCmd;
+  // airframe / autopilot first-order lag
+  const alpha=Math.min(1, dt/Math.max(P.tau,1e-4));
+  s.nAch += (nCmd - s.nAch)*alpha;
+  // aerodynamic turn authority scales with airspeed^2 (little control near zero speed)
+  const VREF=100;                                       // airspeed for full-G authority
+  const aeroMax = nMax*Math.min(1,(s.iV/VREF)*(s.iV/VREF));
+  if(Math.abs(s.nAch)>aeroMax){ s.nAch=Math.sign(s.nAch)*aeroMax; s.saturEver=true; }
+  // ----- apply to interceptor: axial thrust, drag, turn -----
+  s.boost = s.t < P.burnTime;
+  if(s.boost) s.iV += P.axialAccel*G0*dt;               // rocket motor burn
+  const gLat=Math.abs(s.nAch)/G0;
+  s.iV -= (P.dragInd*gLat*gLat*G0 + P.dragBase)*dt;     // induced + base drag
+  if(s.iV<0) s.iV=0;
+  const omega = s.nAch/Math.max(s.iV,1e-3);
+  s.ihead += omega*dt;
+  s.ix += s.iV*Math.cos(s.ihead)*dt;
+  s.iy += s.iV*Math.sin(s.ihead)*dt;
+  s.peakV=Math.max(s.peakV,s.iV);
+
+  // ----- peaks / record -----
+  const gCmd=Math.abs(nCmd)/G0, gAch=Math.abs(s.nAch)/G0, gTgt=Math.abs(s.nTgt)/G0;
+  s.peakGcmd=Math.max(s.peakGcmd,gCmd); s.peakGach=Math.max(s.peakGach,gAch); s.peakGtgt=Math.max(s.peakGtgt,gTgt);
+  if(R<s.Rmin) s.Rmin=R;
+  s.t += dt;
+
+  const lamDotTrue = R>1e-6 ? ( (dx*(tvy-ivy)-dy*(tvx-ivx)) / (R*R) ) : 0;
+  if(log.length<MAXREC) log.push({
+    t:s.t, ix:s.ix, iy:s.iy, tx:s.tx, ty:s.ty,
+    ihead:s.ihead, thead:s.thead, iV:s.iV, tV:s.tV,
+    R, Vc, tgo: Vc>1?R/Vc:NaN, lam:lamTrue, lamDotMeas:s.lamDotMeas, lamDotTrue,
+    gCmd:Math.sign(nCmd)*gCmd, gAch:Math.sign(s.nAch)*gAch, gTgt, gCmdAbs:gCmd, gAchAbs:gAch,
+    bearing:bearing*180/Math.PI, fovDeg:P.fovHalf, locked:guidanceLocked?1:0, satur:s.satur?1:0,
+    boost:s.boost?1:0
+  });
+
+  // trails (decimated)
+  if(log.length%5===0){ s.trailI.push([s.ix,s.iy]); s.trailT.push([s.tx,s.ty]);
+    if(s.trailI.length>4000){s.trailI.shift();s.trailT.shift();} }
+
+  // ----- termination -----
+  if(R < P.hitRadius){ end(s,"hit",R); }
+  else if(Vc<0 && s.t>0.1){ end(s,"miss",s.Rmin); }      // passed closest approach
+  else if(s.t>=P.maxTOF){ end(s,"timeout",s.Rmin); }
+}
+function end(s,outcome,miss){
+  s.ended=true; s.outcome=outcome; s.missDist=miss;
+  state="ended"; document.getElementById("pauseBtn").disabled=true;
+  document.getElementById("stepBtn").disabled=true;
+  document.getElementById("csvBtn").disabled=false;
+  showResults(s);
+}
+
+/* ---------------- main animation loop ---------------- */
+function loop(now){
+  requestAnimationFrame(loop);
+  if(!lastTime) lastTime=now;
+  let real=(now-lastTime)/1000; lastTime=now;
+  if(real>0.05) real=0.05;                 // avoid huge catch-up jumps
+  if(state==="running" && sim){
+    cam.tScale=P.timeScale;
+    acc += real*P.timeScale;
+    let n=0;
+    while(acc>=DT && state==="running"){ step(sim); acc-=DT; if(++n>2000)break; }
+  }
+  render();
+}
+requestAnimationFrame(loop);
+
+/* ---------------- arm / controls ---------------- */
+function arm(){
+  sim=freshSim(); log=[]; acc=0; dragging=false; cursorWorld=null; mouseInTop=false;
+  state="armed";
+  document.getElementById("pauseBtn").disabled=true;
+  document.getElementById("pauseBtn").textContent="Pause";
+  document.getElementById("stepBtn").disabled=true;
+  document.getElementById("csvBtn").disabled=true;
+  document.getElementById("results").classList.remove("show");
+  setStatus("ARMED — click anywhere on this view to launch, then move the mouse to fly the target","go");
+  // camera framed to whole engagement (centered on interceptor↔target midpoint)
+  const off=P.initOffset*Math.PI/180;
+  cam.cx=P.initRange*Math.cos(off)/2; cam.cy=P.initRange*Math.sin(off)/2;
+  cam.scale=fitScale(P.initRange*1.3);
+  fitAll();   // results panel just hidden -> views grew, refit canvases
+}
+function fitScale(span){ const v=dims.top||{w:600,h:400}; return Math.min(v.w,v.h)/span; }
+document.getElementById("armBtn").onclick=arm;
+document.getElementById("pauseBtn").onclick=()=>{
+  if(state==="running"){state="paused";document.getElementById("pauseBtn").textContent="Resume";document.getElementById("stepBtn").disabled=false;}
+  else if(state==="paused"){state="running";lastTime=0;document.getElementById("pauseBtn").textContent="Pause";document.getElementById("stepBtn").disabled=true;}
+};
+document.getElementById("stepBtn").onclick=()=>{ if(state==="paused"&&sim&&!sim.ended) step(sim); render(); };
+document.getElementById("csvBtn").onclick=exportCSV;
+
+/* ---------------- mouse: start + drag the target ---------------- */
+let mouseInTop=false;
+function topMouse(e){const r=topC.getBoundingClientRect();
+  return {mx:e.clientX-r.left, my:e.clientY-r.top,
+    inside: e.clientX>=r.left && e.clientX<=r.right && e.clientY>=r.top && e.clientY<=r.bottom};}
+function screenToWorld(mx,my){const v=dims.top;return {x:cam.cx+(mx-v.w/2)/cam.scale, y:cam.cy-(my-v.h/2)/cam.scale};}
+function worldToScreen(wx,wy){const v=dims.top;return {x:v.w/2+(wx-cam.cx)*cam.scale, y:v.h/2-(wy-cam.cy)*cam.scale};}
+// Launch on any click in the view; thereafter the target steers toward the
+// cursor whenever the pointer is over the engagement view (no button-hold needed).
+function launch(m){
+  cursorWorld=screenToWorld(m.mx,m.my); mouseInTop=true;
+  if(state==="armed" && sim){
+    state="running"; lastTime=0;
+    document.getElementById("pauseBtn").disabled=false;
+    setStatus("ENGAGEMENT LIVE — move the mouse over this view to fly the target","go");
+  }
+}
+topC.addEventListener("mousedown",e=>{ e.preventDefault(); launch(topMouse(e)); });
+topC.addEventListener("mousemove",e=>{ const m=topMouse(e); cursorWorld=screenToWorld(m.mx,m.my); mouseInTop=true; });
+topC.addEventListener("mouseenter",()=>{ mouseInTop=true; });
+topC.addEventListener("mouseleave",()=>{ mouseInTop=false; });
+
+/* ---------------- rendering ---------------- */
+function setStatus(html,cls){const s=document.getElementById("status");s.innerHTML=html;s.className=cls||"";}
+function render(){
+  if(!dims.top) return;
+  // pick frame: live sim, or replay record
+  let f=null, trails=null;
+  if(state==="ended" && replayActive){ f=log[replayIdx]; trails=replayTrails(replayIdx); }
+  else if(sim){ f={ix:sim.ix,iy:sim.iy,tx:sim.tx,ty:sim.ty,ihead:sim.ihead,thead:sim.thead,
+      iV:sim.iV,tV:sim.tV,R:Math.hypot(sim.tx-sim.ix,sim.ty-sim.iy),locked:sim.locked?1:0,
+      bearing:ang(Math.atan2(sim.ty-sim.iy,sim.tx-sim.ix)-sim.ihead)*180/Math.PI,fovDeg:P.fovHalf,
+      Vc:0,t:sim.t,gCmdAbs:Math.abs(sim.nCmd)/G0,gAchAbs:Math.abs(sim.nAch)/G0,gTgt:Math.abs(sim.nTgt)/G0,
+      lamDotMeas:sim.lamDotMeas, tgo:NaN, boost:sim.boost?1:0};
+    trails={i:sim.trailI,t:sim.trailT}; }
+  if(!f) return;
+  // smooth camera to keep both in view (only while live)
+  if(!(state==="ended"&&replayActive)){
+    const span=Math.max(f.R*1.3, 120);
+    const tScale=Math.min(dims.top.w,dims.top.h)/span;
+    cam.scale += (tScale-cam.scale)*0.08;
+    cam.cx += ((f.ix+f.tx)/2 - cam.cx)*0.08;
+    cam.cy += ((f.iy+f.ty)/2 - cam.cy)*0.08;
+  }
+  drawTop(f,trails); drawSeek(f); drawReadouts(f); drawCharts();
+}
+
+function drawTop(f,trails){
+  const v=dims.top, x=topX; x.clearRect(0,0,v.w,v.h);
+  // grid
+  x.strokeStyle="#10161e"; x.lineWidth=1;
+  const gstep=niceStep(800/cam.scale); const px=gstep*cam.scale;
+  const ox=((v.w/2-(cam.cx*cam.scale))%px+px)%px, oy=((v.h/2+(cam.cy*cam.scale))%px+px)%px;
+  for(let gx=ox; gx<v.w; gx+=px){x.beginPath();x.moveTo(gx,0);x.lineTo(gx,v.h);x.stroke();}
+  for(let gy=oy; gy<v.h; gy+=px){x.beginPath();x.moveTo(0,gy);x.lineTo(v.w,gy);x.stroke();}
+  // scale bar
+  x.fillStyle="#5b6b80"; x.font="10px sans-serif";
+  x.fillText(`grid ${fmtDist(gstep)}`, 8, v.h-8);
+  const W2S=(wx,wy)=>({x:v.w/2+(wx-cam.cx)*cam.scale, y:v.h/2-(wy-cam.cy)*cam.scale});
+  // trails
+  if(trails){ drawTrail(x,trails.i,W2S,"rgba(57,211,255,.5)"); drawTrail(x,trails.t,W2S,"rgba(255,210,63,.5)"); }
+  const is=W2S(f.ix,f.iy), ts=W2S(f.tx,f.ty);
+  // LOS line
+  x.strokeStyle=f.locked? "rgba(181,139,255,.55)":"rgba(255,90,90,.7)"; x.lineWidth=1.5;
+  x.setLineDash(f.locked?[]:[5,4]); x.beginPath();x.moveTo(is.x,is.y);x.lineTo(ts.x,ts.y);x.stroke();x.setLineDash([]);
+  // velocity vectors
+  drawVec(x,is,f.ihead,f.iV,cam.scale,"#39d3ff");
+  drawVec(x,ts,f.thead,f.tV,cam.scale,"#ffd23f");
+  // interceptor (triangle) + motor flame while boosting
+  if(f.boost){ x.save(); x.translate(is.x,is.y); x.rotate(-f.ihead);
+    x.fillStyle="rgba(255,140,40,.9)"; x.beginPath();
+    x.moveTo(-4,0); x.lineTo(-12-Math.random()*8,3); x.lineTo(-12-Math.random()*8,-3); x.closePath(); x.fill();
+    x.restore(); }
+  drawCraft(x,is,f.ihead,"#39d3ff");
+  // target (diamond + crosshair when armed)
+  x.save(); x.translate(ts.x,ts.y); x.rotate(-f.thead);
+  x.fillStyle="#ffd23f"; x.beginPath();x.moveTo(8,0);x.lineTo(0,6);x.lineTo(-8,0);x.lineTo(0,-6);x.closePath();x.fill(); x.restore();
+  if(state==="armed"){ // crosshair to grab
+    x.strokeStyle="#ffd23f"; x.lineWidth=1.2; x.beginPath();
+    x.arc(ts.x,ts.y,16,0,7); x.moveTo(ts.x-22,ts.y);x.lineTo(ts.x-12,ts.y);
+    x.moveTo(ts.x+12,ts.y);x.lineTo(ts.x+22,ts.y);x.moveTo(ts.x,ts.y-22);x.lineTo(ts.x,ts.y-12);
+    x.moveTo(ts.x,ts.y+12);x.lineTo(ts.x,ts.y+22);x.stroke();
+  }
+  // steer point (where you're flying the target toward)
+  if((state==="running"||state==="paused") && mouseInTop && cursorWorld){
+    const cs=W2S(cursorWorld.x,cursorWorld.y);
+    x.strokeStyle="rgba(255,210,63,.85)"; x.lineWidth=1; x.setLineDash([3,3]);
+    x.beginPath(); x.moveTo(ts.x,ts.y); x.lineTo(cs.x,cs.y); x.stroke(); x.setLineDash([]);
+    x.beginPath(); x.arc(cs.x,cs.y,6,0,7);
+    x.moveTo(cs.x-10,cs.y);x.lineTo(cs.x+10,cs.y);x.moveTo(cs.x,cs.y-10);x.lineTo(cs.x,cs.y+10); x.stroke();
+  }
+  // labels
+  x.fillStyle="#39d3ff"; x.font="10px sans-serif"; x.fillText("interceptor", is.x+10,is.y-8);
+  x.fillStyle="#ffd23f"; x.fillText("target", ts.x+10,ts.y-10);
+}
+function drawTrail(x,arr,W2S,col){ if(!arr||arr.length<2)return; x.strokeStyle=col;x.lineWidth=1.5;x.beginPath();
+  for(let i=0;i<arr.length;i++){const p=W2S(arr[i][0],arr[i][1]); i?x.lineTo(p.x,p.y):x.moveTo(p.x,p.y);} x.stroke(); }
+function drawVec(x,s,head,V,scale,col){ const L=Math.min(70,Math.max(22,V*scale*0.25));
+  const ex=s.x+Math.cos(head)*L, ey=s.y-Math.sin(head)*L;
+  x.strokeStyle=col;x.globalAlpha=.5;x.lineWidth=2;x.beginPath();x.moveTo(s.x,s.y);x.lineTo(ex,ey);x.stroke();x.globalAlpha=1; }
+function drawCraft(x,s,head,col){ x.save();x.translate(s.x,s.y);x.rotate(-head);x.fillStyle=col;
+  x.beginPath();x.moveTo(11,0);x.lineTo(-7,6);x.lineTo(-4,0);x.lineTo(-7,-6);x.closePath();x.fill();x.restore(); }
+
+function drawSeek(f){
+  const v=dims.seek,x=seekX; x.clearRect(0,0,v.w,v.h);
+  const cx=v.w/2, cy=v.h/2, R=Math.min(v.w,v.h)/2-14;
+  // FOV disc
+  x.fillStyle="#05080c"; x.beginPath();x.arc(cx,cy,R,0,7);x.fill();
+  x.strokeStyle="#27303d"; x.lineWidth=1;
+  for(let rr=R; rr>0; rr-=R/3){x.beginPath();x.arc(cx,cy,rr,0,7);x.stroke();}
+  // crosshair (boresight)
+  x.strokeStyle="#3a4757"; x.beginPath();x.moveTo(cx-R,cy);x.lineTo(cx+R,cy);x.moveTo(cx,cy-R);x.lineTo(cx,cy+R);x.stroke();
+  x.fillStyle="#5b6b80";x.font="9px sans-serif";x.fillText(`±${f.fovDeg}°`,cx+R-26,cy-4);
+  // target blip: horizontal pos = bearing offset / FOV
+  const frac=Math.max(-1.15,Math.min(1.15, f.bearing/f.fovDeg));
+  const bx=cx+frac*R, by=cy;
+  const inFov=Math.abs(f.bearing)<=f.fovDeg;
+  x.fillStyle = (f.locked&&inFov)? "#ffd23f":"#ff5a5a";
+  x.beginPath();x.arc(bx,by,7,0,7);x.fill();
+  x.strokeStyle=x.fillStyle;x.globalAlpha=.4;x.beginPath();x.arc(bx,by,13,0,7);x.stroke();x.globalAlpha=1;
+  // status text
+  x.font="11px sans-serif"; x.textAlign="center";
+  if(f.locked&&inFov){x.fillStyle="#3ad17a";x.fillText("● LOCKED",cx,v.h-10);}
+  else {x.fillStyle="#ff5a5a";x.fillText("✕ LOCK LOST",cx,v.h-10);}
+  x.textAlign="left";
+}
+
+/* readouts — [key, label, unit, valueFn, fracOfMaxFn?]
+   the 5th fn (when present) returns 0..1 of that reading vs its max -> bar + % on the box */
+const RO=[
+  ["t", "time",         "s",  f=>f.t.toFixed(3)],
+  ["R", "range",        "m",  f=>fmtDist(f.R)],
+  ["Vc","closing",      "m/s",f=>isFinite(f.Vc)?Math.round(f.Vc):"—"],
+  ["tgo","t-to-go",     "s",  f=>isFinite(f.tgo)?f.tgo.toFixed(2):"—"],
+  ["lam","λ̇ seeker",    "°/s",f=>(f.lamDotMeas*180/Math.PI).toFixed(2)],
+  ["gc","G cmd",        "",   f=>f.gCmdAbs.toFixed(1),                  f=>f.gCmdAbs/P.intMaxG],
+  ["ga","G achieved",   "",   f=>f.gAchAbs.toFixed(1),                  f=>f.gAchAbs/P.intMaxG],
+  ["gt","target G",     "",   f=>f.gTgt.toFixed(1),                     f=>f.gTgt/P.targetMaxG],
+  ["tV","target speed", "m/s",f=>Math.round(f.tV),                      f=>f.tV/P.targetMaxSpeed],
+  ["iV","intcp speed",  "m/s",f=>Math.round(f.iV)+(f.boost?"  🔥":"")],
+  ["bo","seeker offset","°",  f=>f.bearing.toFixed(1),                  f=>Math.abs(f.bearing)/P.fovHalf],
+];
+function drawReadouts(f){
+  const root=document.getElementById("readouts");
+  if(root.childElementCount!==RO.length){ root.innerHTML=RO.map(r=>
+    `<div class="ro${r[4]?' hasbar':''}"><div class="k">${r[1]}${r[2]?" ("+r[2]+")":""}</div>`+
+    `<div class="v" data-r="${r[0]}">—</div>`+
+    (r[4]?`<div class="pct" data-p="${r[0]}"></div><div class="bar"><div class="fill" data-b="${r[0]}"></div></div>`:"")+
+    `</div>`).join(""); }
+  RO.forEach(r=>{
+    root.querySelector(`[data-r="${r[0]}"]`).textContent=r[3](f);
+    if(r[4]){
+      const frac=Math.max(0,Math.min(1.2, r[4](f)||0));
+      const col = frac>=0.98? "var(--bad)" : frac>=0.8? "#ffae42" : "var(--accent)";
+      const fill=root.querySelector(`[data-b="${r[0]}"]`);
+      fill.style.height=Math.min(100,frac*100).toFixed(0)+"%"; fill.style.background=col;
+      const pct=root.querySelector(`[data-p="${r[0]}"]`);
+      pct.textContent=Math.round(frac*100)+"%"; pct.style.color=col;
+    }
+  });
+}
+
+/* ---------------- charts ---------------- */
+function drawCharts(){
+  const live = state!=="ended";
+  const cur = (state==="ended"&&replayActive)? log[replayIdx].t : (sim?sim.t:0);
+  const winStart = live ? Math.max(0, cur-4) : 0;        // live: last 4s sim-time
+  const winEnd   = live ? Math.max(cur,0.001) : (log.length?log[log.length-1].t:1);
+  const data = log;
+  // G chart
+  stripChart("g",data,winStart,winEnd,cur,[
+    {get:d=>d.gCmd,col:getCss("--cmd")},
+    {get:d=>d.gAch,col:getCss("--ach")},
+    {get:d=>d.gTgt,col:getCss("--tgt")},
+  ],{hlines:[{y:P.intMaxG,col:"#3a4757"},{y:-P.intMaxG,col:"#3a4757"}],sym:true});
+  // LOS rate
+  stripChart("lam",data,winStart,winEnd,cur,[
+    {get:d=>d.lamDotTrue*180/Math.PI,col:"#5b6b80"},
+    {get:d=>d.lamDotMeas*180/Math.PI,col:getCss("--los")},
+  ],{sym:true});
+  // range + Vc (dual axis-ish, normalized separately)
+  stripChartDual("rng",data,winStart,winEnd,cur,
+    {get:d=>d.R,col:getCss("--range"),hl:P.hitRadius},
+    {get:d=>d.Vc,col:getCss("--vc")});
+  // seeker offset
+  stripChart("off",data,winStart,winEnd,cur,[
+    {get:d=>d.bearing,col:"#ffae42"},
+  ],{hlines:[{y:P.fovHalf,col:"#5b6b80"},{y:-P.fovHalf,col:"#5b6b80"}],sym:true});
+}
+function getCss(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+function chartFrame(name){const o=chartCv[name];const v=dims["c_"+name];const x=o.cx;x.clearRect(0,0,v.w,v.h);
+  return {x,v,w:v.w,h:v.h,padL:34,padR:8,padT:16,padB:14};}
+function sliceWin(data,a,b){ // binary-ish linear slice
+  let i0=0;while(i0<data.length&&data[i0].t<a)i0++; let i1=data.length-1;while(i1>0&&data[i1].t>b)i1--;
+  return [Math.max(0,i0-1),Math.min(data.length-1,i1+1)];}
+function stripChart(name,data,a,b,cur,series,opt={}){
+  const F=chartFrame(name); const{x,w,h,padL,padR,padT,padB}=F;
+  const plotW=w-padL-padR, plotH=h-padT-padB;
+  if(data.length<2){axes(F,a,b,0,1);return;}
+  const [i0,i1]=sliceWin(data,a,b);
+  let mn=Infinity,mx=-Infinity;
+  for(let i=i0;i<=i1;i++)for(const s of series){const yv=s.get(data[i]);if(isFinite(yv)){if(yv<mn)mn=yv;if(yv>mx)mx=yv;}}
+  if(opt.hlines)opt.hlines.forEach(l=>{mn=Math.min(mn,l.y);mx=Math.max(mx,l.y);});
+  if(!isFinite(mn)){mn=-1;mx=1;}
+  if(opt.sym){const m=Math.max(Math.abs(mn),Math.abs(mx),0.001);mn=-m;mx=m;}
+  if(mx-mn<1e-6){mx+=1;mn-=1;}
+  const X=t=>padL+((t-a)/(b-a||1))*plotW, Y=val=>padT+plotH-((val-mn)/(mx-mn))*plotH;
+  // hlines
+  if(opt.hlines)opt.hlines.forEach(l=>{x.strokeStyle=l.col;x.setLineDash([4,3]);x.beginPath();x.moveTo(padL,Y(l.y));x.lineTo(w-padR,Y(l.y));x.stroke();x.setLineDash([]);});
+  // zero line
+  if(mn<0&&mx>0){x.strokeStyle="#1c2530";x.beginPath();x.moveTo(padL,Y(0));x.lineTo(w-padR,Y(0));x.stroke();}
+  for(const s of series){ x.strokeStyle=s.col;x.lineWidth=1.4;x.beginPath();let started=false;
+    for(let i=i0;i<=i1;i++){const d=data[i];const yv=s.get(d);if(!isFinite(yv)){started=false;continue;}
+      const px=X(d.t),py=Y(yv); started?x.lineTo(px,py):x.moveTo(px,py); started=true;}
+    x.stroke(); }
+  axes(F,a,b,mn,mx);
+  cursorLine(F,cur,a,b);
+}
+function stripChartDual(name,data,a,b,cur,sA,sB){
+  const F=chartFrame(name);const{x,w,h,padL,padR,padT,padB}=F;
+  const plotW=w-padL-padR,plotH=h-padT-padB;
+  if(data.length<2){axes(F,a,b,0,1);return;}
+  const [i0,i1]=sliceWin(data,a,b);
+  let amn=Infinity,amx=-Infinity,bmn=Infinity,bmx=-Infinity;
+  for(let i=i0;i<=i1;i++){const va=sA.get(data[i]),vb=sB.get(data[i]);
+    if(isFinite(va)){amn=Math.min(amn,va);amx=Math.max(amx,va);} if(isFinite(vb)){bmn=Math.min(bmn,vb);bmx=Math.max(bmx,vb);}}
+  amn=Math.min(amn,0,sA.hl);amx=Math.max(amx,sA.hl);if(!isFinite(amn)){amn=0;amx=1;}
+  if(!isFinite(bmn)){bmn=-1;bmx=1;} const bm=Math.max(Math.abs(bmn),Math.abs(bmx),1);bmn=-bm;bmx=bm;
+  const X=t=>padL+((t-a)/(b-a||1))*plotW;
+  const YA=val=>padT+plotH-((val-amn)/((amx-amn)||1))*plotH;
+  const YB=val=>padT+plotH-((val-bmn)/((bmx-bmn)||1))*plotH;
+  x.strokeStyle="#3a4757";x.setLineDash([4,3]);x.beginPath();x.moveTo(padL,YA(sA.hl));x.lineTo(w-padR,YA(sA.hl));x.stroke();x.setLineDash([]);
+  [[sA,YA],[sB,YB]].forEach(([s,Y])=>{x.strokeStyle=s.col;x.lineWidth=1.4;x.beginPath();let st=false;
+    for(let i=i0;i<=i1;i++){const d=data[i];const yv=s.get(d);if(!isFinite(yv)){st=false;continue;}
+      const px=X(d.t),py=Y(yv);st?x.lineTo(px,py):x.moveTo(px,py);st=true;}x.stroke();});
+  axes(F,a,b,amn,amx,sA.col);
+  cursorLine(F,cur,a,b);
+}
+function axes(F,a,b,mn,mx,col){const{x,w,h,padL,padR,padT,padB}=F;
+  x.strokeStyle="#1c2530";x.lineWidth=1;x.beginPath();x.moveTo(padL,padT);x.lineTo(padL,h-padB);x.lineTo(w-padR,h-padB);x.stroke();
+  x.fillStyle=col||"#5b6b80";x.font="9px sans-serif";
+  x.fillText(fmtAx(mx),2,padT+8); x.fillText(fmtAx(mn),2,h-padB);
+  x.fillStyle="#46566a";x.fillText(a.toFixed(1)+"s",padL,h-3);x.fillText(b.toFixed(1)+"s",w-padR-22,h-3);
+}
+function cursorLine(F,cur,a,b){ if(!(state==="ended"&&replayActive))return; const{x,h,padL,padR,padT,padB,w}=F;
+  if(cur<a||cur>b)return; const px=padL+((cur-a)/(b-a||1))*(w-padL-padR);
+  x.strokeStyle="#ffffff";x.globalAlpha=.5;x.beginPath();x.moveTo(px,padT);x.lineTo(px,h-padB);x.stroke();x.globalAlpha=1;}
+function fmtAx(v){const a=Math.abs(v);return a>=1000?(v/1000).toFixed(1)+"k":a>=100?v.toFixed(0):a>=1?v.toFixed(1):v.toFixed(2);}
+function niceStep(x){const p=Math.pow(10,Math.floor(Math.log10(x)));const f=x/p;return (f<1.5?1:f<3.5?2:f<7.5?5:10)*p;}
+function fmtDist(m){return m>=1000?(m/1000).toFixed(2)+" km":Math.round(m)+" m";}
+
+/* ---------------- results + replay ---------------- */
+let replayActive=false, replayIdx=0;
+function showResults(s){
+  const res=document.getElementById("results"); res.classList.add("show");
+  const hit=s.outcome==="hit";
+  const title=document.getElementById("resTitle");
+  title.innerHTML = hit? `<span style="color:var(--good)">✔ INTERCEPT</span>`
+    : s.outcome==="timeout"? `<span style="color:var(--bad)">✖ MISS — flight time / energy expired</span>`
+    : `<span style="color:var(--bad)">✖ MISS</span>`;
+  setStatus(hit?`✔ INTERCEPT — miss distance ${s.missDist.toFixed(2)} m`:`✖ MISS — closest approach ${s.missDist.toFixed(1)} m`, hit?"hit":"miss");
+  const last=log[log.length-1]||{};
+  const stats=[
+    ["Outcome", hit?"HIT":"MISS"],
+    ["Miss distance", s.missDist.toFixed(2)+" m"],
+    ["Time of flight", s.t.toFixed(3)+" s"],
+    ["Peak G commanded", s.peakGcmd.toFixed(1)+" G"],
+    ["Peak G achieved", s.peakGach.toFixed(1)+" G"],
+    ["Peak target G", s.peakGtgt.toFixed(1)+" G"],
+    ["Command saturated?", s.saturEver?"YES — G / airspeed limited":"no"],
+    ["Lock lost?", s.lostLockEver?"YES — left FOV":"no"],
+    ["Peak intcp speed", Math.round(s.peakV)+" m/s"],
+    ["Final intcp speed", Math.round(s.iV)+" m/s"],
+    ["Final target speed", Math.round(s.tV)+" m/s"],
+    ["Frames logged", log.length],
+    ["Guidance law", ({true:"True PN",pure:"Pure PN",aug:"Augmented PN"})[P.pnLaw]],
+  ];
+  document.getElementById("statgrid").innerHTML=stats.map(s=>`<div class="stat"><div class="k">${s[0]}</div><div class="v">${s[1]}</div></div>`).join("");
+  // replay
+  const rp=document.getElementById("replay"); rp.max=log.length-1; rp.value=log.length-1; rp.disabled=false;
+  replayActive=true; replayIdx=log.length-1;
+  document.getElementById("replayT").textContent=`t = ${(last.t||0).toFixed(3)} s`;
+  fitAll();   // results panel now shown -> views shrank, refit canvases
+}
+document.getElementById("replay").addEventListener("input",e=>{
+  replayActive=true; replayIdx=parseInt(e.target.value);
+  const r=log[replayIdx]; document.getElementById("replayT").textContent=`t = ${(r?r.t:0).toFixed(3)} s`;
+  render();
+});
+function replayTrails(idx){const i=[],t=[];for(let k=0;k<=idx;k+=5){i.push([log[k].ix,log[k].iy]);t.push([log[k].tx,log[k].ty]);}return {i,t};}
+
+/* ---------------- CSV export ---------------- */
+function exportCSV(){
+  if(!log.length)return;
+  const cols=["t","ix","iy","tx","ty","ihead","thead","iV","tV","R","Vc","tgo","lam","lamDotMeas","lamDotTrue","gCmd","gAch","gTgt","bearing","fovDeg","locked","satur","boost"];
+  const head="# ProNav sim  law="+P.pnLaw+"  "+PARAMS.map(p=>p.k+"="+P[p.k]).join(" ")+"\n";
+  let csv=head+cols.join(",")+"\n";
+  const lines=new Array(log.length);
+  for(let i=0;i<log.length;i++){const d=log[i];lines[i]=cols.map(c=>{const v=d[c];return (typeof v==="number")?(Number.isInteger(v)?v:v.toFixed(5)):v;}).join(",");}
+  csv+=lines.join("\n");
+  const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");a.href=url;a.download="pronav_run.csv";a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+/* ---------------- boot ---------------- */
+window.addEventListener("load",()=>{ fitAll(); arm(); });
+</script>
+</body>
+</html>
