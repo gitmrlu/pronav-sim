@@ -152,7 +152,7 @@
     <div class="chart"><canvas data-c="g"></canvas><div class="clabel">Acceleration — G</div>
       <div class="legend"><span><i style="background:var(--cmd)"></i>cmd</span><span><i style="background:var(--ach)"></i>achieved</span><span><i style="background:var(--tgt)"></i>target</span></div></div>
     <div class="chart"><canvas data-c="lam"></canvas><div class="clabel">LOS rate — °/s</div>
-      <div class="legend"><span><i style="background:var(--los)"></i>seeker</span><span><i style="background:#5b6b80"></i>true</span></div></div>
+      <div class="legend"><span><i style="background:#46566a"></i>raw</span><span><i style="background:var(--los)"></i>Kalman</span><span><i style="background:#e6edf5"></i>true</span></div></div>
     <div class="chart"><canvas data-c="rng"></canvas><div class="clabel">Range &amp; closing velocity</div>
       <div class="legend"><span><i style="background:var(--range)"></i>range m</span><span><i style="background:var(--vc)"></i>Vc m/s</span></div></div>
     <div class="chart"><canvas data-c="off"></canvas><div class="clabel">Seeker bearing offset — °</div>
@@ -295,7 +295,9 @@ function freshSim(){
     nextSample:0, lamDotMeas:0, lamMeasLast:0,
     // LOS estimator state: kfX = [λ, λ̇, λ̈]; kfP = 3x3 covariance; kfT = last update time
     kfInit:false, kfX:[0,0,0], kfP:[[1,0,0],[0,1,0],[0,0,1]], kfT:0,
+    lamDotRaw:0, lamRawPrev:0, lamRawT:0, lamRawInit:false,   // raw finite-diff λ̇ (for display)
     aTgtEst:0, VcEst:0,                // estimated target perp-accel and closing velocity
+    cpa:R, cpaT:0,                     // true continuous closest-point-of-approach + its time
     locked:true, inFov:true, satur:false, boost:true,
     Rmin:R, tHit:null, ended:false, outcome:null, missDist:R,
     peakGcmd:0, peakGach:0, peakGtgt:0, peakV:0, lostLockEver:false, saturEver:false,
@@ -399,6 +401,9 @@ function step(s){
   while(s.seekRaw.length && s.seekRaw[0].t <= availT){
     const smp = s.seekRaw.shift(); s.seekAvail.push(smp);
     if(smp.valid){
+      // raw two-point finite-difference λ̇ — kept for display (shows what the filter rejects)
+      if(s.lamRawInit) s.lamDotRaw = ang(smp.lam - s.lamRawPrev)/Math.max(smp.t - s.lamRawT, 1e-4);
+      s.lamRawPrev = smp.lam; s.lamRawT = smp.t; s.lamRawInit = true;
       const dtk = s.kfInit ? Math.max(smp.t - s.kfT, 1e-4) : 0;
       if(P.seekerFilter==="raw"){                                // two-point finite difference
         if(s.kfInit){ s.lamDotMeas = ang(smp.lam - s.kfX[0])/dtk; }
@@ -477,7 +482,8 @@ function step(s){
   let tstar = vv>1e-12 ? -((drx*ddx+dry*ddy)/vv) : 0;
   tstar=Math.max(0,Math.min(1,tstar));
   const dmin=Math.hypot(drx+ddx*tstar, dry+ddy*tstar);   // true closest approach this step
-  if(dmin<s.Rmin) s.Rmin=dmin;
+  if(dmin<s.Rmin){ s.Rmin=dmin; s.cpa=dmin; s.cpaT=s.t+tstar*dt; }
+  const cpaPassed = (tstar<1 && s.t>0.05);               // interior min reached -> CPA just passed
 
   // ----- peaks / record -----
   const gCmd=Math.abs(nCmd)/G0, gAch=Math.abs(s.nAch)/G0, gTgt=Math.abs(s.nTgt)/G0;
@@ -487,7 +493,8 @@ function step(s){
   if(log.length<MAXREC) log.push({
     t:s.t, ix:s.ix, iy:s.iy, tx:s.tx, ty:s.ty,
     ihead:s.ihead, thead:s.thead, iV:s.iV, tV:s.tV,
-    R, Vc, tgo: Vc>1?R/Vc:NaN, lam:lamTrue, lamDotMeas:s.lamDotMeas, lamDotTrue,
+    R, Vc, tgo: Vc>1?R/Vc:NaN, lam:lamTrue,
+    lamDotMeas:s.lamDotMeas, lamDotTrue, lamDotRaw:s.lamDotRaw, cpa:s.Rmin,
     gCmd:Math.sign(nCmd)*gCmd, gAch:Math.sign(s.nAch)*gAch, gTgt, gCmdAbs:gCmd, gAchAbs:gAch,
     bearing:bearing*180/Math.PI, fovDeg:P.fovHalf, locked:guidanceLocked?1:0, satur:s.satur?1:0,
     boost:s.boost?1:0
@@ -497,10 +504,10 @@ function step(s){
   if(log.length%5===0){ s.trailI.push([s.ix,s.iy]); s.trailT.push([s.tx,s.ty]);
     if(s.trailI.length>4000){s.trailI.shift();s.trailT.shift();} }
 
-  // ----- termination -----
-  if(dmin < P.hitRadius){ end(s,"hit",dmin); }           // sub-step closest approach
-  else if(Vc<0 && s.t>0.1){ end(s,"miss",s.Rmin); }      // passed closest approach
-  else if(s.t>=P.maxTOF){ end(s,"timeout",s.Rmin); }
+  // ----- termination ----- report the TRUE continuous closest approach (s.Rmin), hit or miss
+  if(cpaPassed || (Vc<0 && s.t>0.1)){                    // closest point of approach reached
+    end(s, s.Rmin < P.hitRadius ? "hit" : "miss", s.Rmin);
+  } else if(s.t>=P.maxTOF){ end(s,"timeout",s.Rmin); }
 }
 function end(s,outcome,miss){
   s.ended=true; s.outcome=outcome; s.missDist=miss;
@@ -584,7 +591,7 @@ function render(){
       iV:sim.iV,tV:sim.tV,R:Math.hypot(sim.tx-sim.ix,sim.ty-sim.iy),locked:sim.locked?1:0,
       bearing:ang(Math.atan2(sim.ty-sim.iy,sim.tx-sim.ix)-sim.ihead)*180/Math.PI,fovDeg:P.fovHalf,
       Vc:0,t:sim.t,gCmdAbs:Math.abs(sim.nCmd)/G0,gAchAbs:Math.abs(sim.nAch)/G0,gTgt:Math.abs(sim.nTgt)/G0,
-      lamDotMeas:sim.lamDotMeas, tgo:NaN, boost:sim.boost?1:0};
+      lamDotMeas:sim.lamDotMeas, tgo:NaN, boost:sim.boost?1:0, cpa:sim.Rmin};
     trails={i:sim.trailI,t:sim.trailT}; }
   if(!f) return;
   // smooth camera to keep both in view (only while live)
@@ -697,6 +704,7 @@ const RO=[
   ["Vc","closing",      "m/s",f=>isFinite(f.Vc)?Math.round(f.Vc):"—"],
   ["tgo","t-to-go",     "s",  f=>isFinite(f.tgo)?f.tgo.toFixed(2):"—"],
   ["lam","λ̇ seeker",    "°/s",f=>(f.lamDotMeas*180/Math.PI).toFixed(2)],
+  ["cpa","closest",     "m",  f=>f.cpa!=null?(f.cpa<1000?f.cpa.toFixed(1):fmtDist(f.cpa)):"—"],
   ["gc","G cmd",        "",   f=>f.gCmdAbs.toFixed(1),                  f=>f.gCmdAbs/P.intMaxG],
   ["ga","G achieved",   "",   f=>f.gAchAbs.toFixed(1),                  f=>f.gAchAbs/P.intMaxG],
   ["gt","target G",     "",   f=>f.gTgt.toFixed(1),                     f=>f.gTgt/P.targetMaxG],
@@ -739,8 +747,9 @@ function drawCharts(){
   ],{hlines:[{y:P.intMaxG,col:"#3a4757"},{y:-P.intMaxG,col:"#3a4757"}],sym:true});
   // LOS rate
   stripChart("lam",data,winStart,winEnd,cur,[
-    {get:d=>d.lamDotTrue*180/Math.PI,col:"#5b6b80"},
-    {get:d=>d.lamDotMeas*180/Math.PI,col:getCss("--los")},
+    {get:d=>(d.lamDotRaw!=null?d.lamDotRaw:0)*180/Math.PI,col:"#46566a"},   // raw measurement
+    {get:d=>d.lamDotTrue*180/Math.PI,col:"#e6edf5",dash:[4,3]},             // true (actual)
+    {get:d=>d.lamDotMeas*180/Math.PI,col:getCss("--los")},                  // Kalman-filtered
   ],{sym:true});
   // range + Vc (dual axis-ish, normalized separately)
   stripChartDual("rng",data,winStart,winEnd,cur,
@@ -773,10 +782,11 @@ function stripChart(name,data,a,b,cur,series,opt={}){
   if(opt.hlines)opt.hlines.forEach(l=>{x.strokeStyle=l.col;x.setLineDash([4,3]);x.beginPath();x.moveTo(padL,Y(l.y));x.lineTo(w-padR,Y(l.y));x.stroke();x.setLineDash([]);});
   // zero line
   if(mn<0&&mx>0){x.strokeStyle="#1c2530";x.beginPath();x.moveTo(padL,Y(0));x.lineTo(w-padR,Y(0));x.stroke();}
-  for(const s of series){ x.strokeStyle=s.col;x.lineWidth=1.4;x.beginPath();let started=false;
+  for(const s of series){ x.strokeStyle=s.col;x.lineWidth=s.lw||1.4;x.setLineDash(s.dash||[]);x.beginPath();let started=false;
     for(let i=i0;i<=i1;i++){const d=data[i];const yv=s.get(d);if(!isFinite(yv)){started=false;continue;}
       const px=X(d.t),py=Y(yv); started?x.lineTo(px,py):x.moveTo(px,py); started=true;}
     x.stroke(); }
+  x.setLineDash([]);
   axes(F,a,b,mn,mx);
   cursorLine(F,cur,a,b);
 }
@@ -822,11 +832,12 @@ function showResults(s){
   title.innerHTML = hit? `<span style="color:var(--good)">✔ INTERCEPT</span>`
     : s.outcome==="timeout"? `<span style="color:var(--bad)">✖ MISS — flight time / energy expired</span>`
     : `<span style="color:var(--bad)">✖ MISS</span>`;
-  setStatus(hit?`✔ INTERCEPT — miss distance ${s.missDist.toFixed(2)} m`:`✖ MISS — closest approach ${s.missDist.toFixed(1)} m`, hit?"hit":"miss");
+  setStatus(`${hit?"✔ INTERCEPT":"✖ MISS"} — closest approach ${s.Rmin.toFixed(2)} m`, hit?"hit":"miss");
   const last=log[log.length-1]||{};
   const stats=[
     ["Outcome", hit?"HIT":"MISS"],
-    ["Miss distance", s.missDist.toFixed(2)+" m"],
+    ["Closest approach (CPA)", s.Rmin.toFixed(2)+" m"],
+    ["CPA / hit radius", (s.Rmin/P.hitRadius).toFixed(2)+"×  ("+P.hitRadius+" m)"],
     ["Time of flight", s.t.toFixed(3)+" s"],
     ["Peak G commanded", s.peakGcmd.toFixed(1)+" G"],
     ["Peak G achieved", s.peakGach.toFixed(1)+" G"],
@@ -856,7 +867,7 @@ function replayTrails(idx){const i=[],t=[];for(let k=0;k<=idx;k+=5){i.push([log[
 /* ---------------- CSV export ---------------- */
 function exportCSV(){
   if(!log.length)return;
-  const cols=["t","ix","iy","tx","ty","ihead","thead","iV","tV","R","Vc","tgo","lam","lamDotMeas","lamDotTrue","gCmd","gAch","gTgt","bearing","fovDeg","locked","satur","boost"];
+  const cols=["t","ix","iy","tx","ty","ihead","thead","iV","tV","R","cpa","Vc","tgo","lam","lamDotRaw","lamDotMeas","lamDotTrue","gCmd","gAch","gTgt","bearing","fovDeg","locked","satur","boost"];
   const head="# ProNav sim  law="+P.pnLaw+" filter="+P.seekerFilter+" idealSensors="+P.idealSensors+"  "+PARAMS.map(p=>p.k+"="+P[p.k]).join(" ")+"\n";
   let csv=head+cols.join(",")+"\n";
   const lines=new Array(log.length);
