@@ -184,12 +184,12 @@ const PARAMS = [
   {g:"Interceptor", k:"intMaxG",    label:"Max lateral G",       min:5,   max:60,  step:1,   val:15,  unit:"G", hint:"Structural turn limit. Low airspeed further limits achievable G (aero authority ∝ V²)."},
   {g:"Interceptor", k:"tau",        label:"Airframe lag τ",      min:0.01,max:0.6, step:0.01,val:0.10,unit:"s", hint:"First-order autopilot/airframe response lag."},
 
-  {g:"Seeker", k:"seekerFps",   label:"Seeker frame rate",   min:10,  max:1000,step:5,   val:100, unit:"Hz"},
+  {g:"Seeker", k:"seekerFps",   label:"Seeker frame rate",   min:10,  max:1000,step:5,   val:240, unit:"Hz"},
   {g:"Seeker", k:"seekerLat",   label:"Processing latency",  min:0,   max:50,  step:1,   val:10,  unit:"ms", hint:"Delay from measurement to usable command."},
   {g:"Seeker", k:"seekerNoise", label:"Angle noise (1σ)",    min:0,   max:10,  step:0.1, val:1.0, unit:"mrad", hint:"Measurement noise the Kalman filter must reject."},
   {g:"Seeker", k:"kfAgility",   label:"Filter agility",      min:0,   max:100, step:1,   val:45,  unit:"", hint:"Kalman process noise: low = smooth but laggy λ̇, high = responsive but noisier."},
   {g:"Seeker", k:"vcNoise",     label:"Closing-vel noise",   min:0,   max:80,  step:1,   val:20,  unit:"m/s", hint:"1σ noise on the range-rate (Vc) estimate. Ignored when Ideal sensors is on."},
-  {g:"Seeker", k:"fovHalf",     label:"FOV / gimbal limit",  min:5,   max:60,  step:1,   val:30,  unit:"°", hint:"If the target leaves this cone, lock is lost and the missile coasts."},
+  {g:"Seeker", k:"fovHalf",     label:"FOV / gimbal limit",  min:5,   max:90,  step:1,   val:50,  unit:"°", hint:"If the target leaves this cone, lock is lost and the missile coasts."},
 
   {g:"Energy / drag", k:"dragPar", label:"Parasitic drag",   min:0,   max:60,  step:1,   val:12,  unit:"m/s²", hint:"Form/skin drag deceleration AT "+VDRAG_REF+" m/s; scales with V² (∝ dynamic pressure)."},
   {g:"Energy / drag", k:"dragInd", label:"Induced drag",     min:0,   max:0.2, step:0.005,val:0.02,unit:"·G²", hint:"Drag from pulling G; ∝ load² and ∝ 1/V² (worse when slow). Calibrated at "+VDRAG_REF+" m/s."},
@@ -220,6 +220,7 @@ P.idealSensors = false;      // when true, guidance uses perfect λ̇ / Vc / tar
       ${p.hint?`<div class="hint">${p.hint}</div>`:""}`;
     const input=c.querySelector("input"), num=c.querySelector(".num");
     input.addEventListener("input",()=>{P[p.k]=parseFloat(input.value);num.textContent=fmtNum(P[p.k],p.step);
+      if(p.k==="seekerFps"||p.k==="seekerLat") updateSeekerLag();
       if(state==="armed") arm(); /* live-update geometry */});
     if(p.presets){
       const pr=document.createElement("div"); pr.className="presets";
@@ -252,20 +253,37 @@ P.idealSensors = false;      // when true, guidance uses perfect λ̇ / Vc / tar
     </select>
     <div class="hint">Estimates λ̇ (and target accel for APN) from the noisy seeker angle.</div>`;
   sg.appendChild(flt);
-  flt.querySelector("select").addEventListener("change",e=>P.seekerFilter=e.target.value);
+  flt.querySelector("select").addEventListener("change",e=>{P.seekerFilter=e.target.value; updateSeekerLag();});
   // Ideal-sensors toggle into Seeker group
   const chk=document.createElement("div"); chk.className="ctl";
   chk.innerHTML=`<label style="display:flex;align-items:center;gap:7px;cursor:pointer">
     <input type="checkbox" id="idealSensors" style="width:auto"> Ideal sensors (perfect λ̇ / Vc / target accel)</label>
     <div class="hint">Off = realistic noisy/estimated info. On = perfect truth, for A/B comparison.</div>`;
   sg.appendChild(chk);
-  chk.querySelector("input").addEventListener("change",e=>P.idealSensors=e.target.checked);
-  updateLawUI();
+  chk.querySelector("input").addEventListener("change",e=>{P.idealSensors=e.target.checked; updateSeekerLag();});
+  // derived seeker-lag readout, pinned at the bottom of the Seeker group
+  const lagbox=document.createElement("div"); lagbox.className="ctl";
+  lagbox.style.cssText="border-top:1px solid var(--line);margin-top:8px;padding-top:8px";
+  lagbox.innerHTML=`<div class="row"><label>Effective seeker lag</label>
+    <span class="val"><span class="num" id="lagTotal">—</span><span class="unit">ms</span></span></div>
+    <div class="hint" id="lagBreak"></div>`;
+  sg.appendChild(lagbox);
+  updateLawUI(); updateSeekerLag();
 })();
 // Pure PN uses missile speed, not closing velocity, so the Vc-noise control is irrelevant there.
 function updateLawUI(){
   const vc=document.getElementById("ctl-vcNoise");
   if(vc) vc.style.display = (P.pnLaw==="pure") ? "none" : "";
+}
+// Derived seeker-lag readout (steady-state lag + one-time acquisition), shown in the Seeker box.
+function updateSeekerLag(){
+  const el=document.getElementById("lagTotal"), br=document.getElementById("lagBreak");
+  if(!el) return;
+  const L=seekerLagInfo(), ms=v=>Math.round(v*1000);
+  el.textContent=ms(L.total);
+  br.innerHTML = P.idealSensors
+    ? "Ideal sensors — perfect λ̇, zero seeker lag."
+    : `${ms(L.proc)} ms latency + 1 frame (${ms(L.frame)} ms). One-time track acquisition: ${ms(L.acq)} ms (${L.n} frames after lock-on).`;
 }
 function fmtNum(v,step){ return (step<1)? v.toFixed(step<0.1?2:(Number.isInteger(v)?0:(step<1?1:0))) : Math.round(v); }
 
@@ -352,6 +370,19 @@ function kfUpdate(s, z, dt, q, R){
   ];
 }
 
+// valid seeker readings the LOS-rate filter needs before its estimate is usable
+function filterReadings(){ return P.idealSensors?0:(P.seekerFilter==="kalman"?5:P.seekerFilter==="ab"?3:2); }
+// Seeker lag. Steady-state (post-warm-up) lag = processing latency + one seeker frame
+// (zero-order hold on the latest reading). A converged near-constant-accel Kalman filter
+// adds no extra steady-state lag — it predicts to the current measurement time. `acq` is
+// the one-time track-acquisition delay (the filter needs n readings before it's trusted).
+function seekerLagInfo(){
+  const fps=Math.max(P.seekerFps,1), frame=1/fps;
+  if(P.idealSensors) return {proc:0, frame:0, n:0, acq:0, total:0};
+  const proc=P.seekerLat/1000, n=filterReadings();
+  return {proc, frame, n, acq:n*frame, total:proc+frame};
+}
+
 /* ---------------- one physics step ---------------- */
 function step(s){
   const dt=DT;
@@ -436,7 +467,7 @@ function step(s){
   if(!fovLock) s.lostLockEver=true;
   // Kalman/α–β filters need several readings before λ̇ is trustworthy -> extra acquisition
   // delay on top of processing latency. (Ideal sensors bypasses the filter, so no warm-up.)
-  const needReadings = P.idealSensors ? 0 : (P.seekerFilter==="kalman" ? 5 : P.seekerFilter==="ab" ? 3 : 2);
+  const needReadings = filterReadings();
   const estReady = s.kfCount >= needReadings;
   const guidanceLocked = fovLock && estReady;                   // guidance only acts once track is settled
   s.guiding = guidanceLocked;
